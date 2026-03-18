@@ -9,7 +9,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 IP = os.environ.get("HEMS_IP", "192.168.0.142")
 PORT = 3610
 INFLUX_URL = os.environ.get("INFLUX_URL", "http://localhost:8086")
-INFLUX_TOKEN = os.environ.get("INFLUX_TOKEN", "my-super-secret-auth-token")
+INFLUX_TOKEN = os.environ.get("INFLUX_TOKEN", "FSw2XDHwcakr7dpiXEJPIHwM6r51TFasOSK4UB_8969yH7axSnhcGu-tyD0BhNhGOF2ST5H_VrBLmRY9u4ixdA==")
 INFLUX_ORG = os.environ.get("INFLUX_ORG", "my-home")
 INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET", "energy_bucket")
 

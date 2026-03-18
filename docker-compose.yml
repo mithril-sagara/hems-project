@@ -1,0 +1,38 @@
+services:
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      - TZ=Asia/Tokyo
+      - INFLUXDB_INIT_MODE=setup
+      - INFLUXDB_INIT_USERNAME=admin
+      - INFLUXDB_INIT_PASSWORD=password1234
+      - INFLUXDB_INIT_ORG=my-home
+      - INFLUXDB_INIT_BUCKET=energy_bucket
+      - INFLUXDB_INIT_ADMIN_TOKEN=my-super-secret-auth-token
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+
+  hems-app:
+    build: .
+    container_name: hems_app
+    network_mode: "host"
+    restart: unless-stopped
+    depends_on:
+      - influxdb
+    environment:
+      - TZ=Asia/Tokyo
+      - HEMS_IP=192.168.0.142
+      - INFLUX_URL=http://localhost:8086
+      - INFLUX_TOKEN=my-super-secret-auth-token
+      - INFLUX_ORG=my-home
+      - INFLUX_BUCKET=energy_bucket
+    volumes:
+      - .:/app
+    working_dir: /app
+
+volumes:
+  influxdb_data:

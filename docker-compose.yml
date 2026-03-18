@@ -3,6 +3,7 @@ services:
     image: influxdb:2.7
     container_name: influxdb
     restart: unless-stopped
+    # ホストモード時はports指定不要ですが、管理用に残しておきます
     ports:
       - "8086:8086"
     environment:
@@ -19,12 +20,13 @@ services:
   hems-app:
     build: .
     container_name: hems_app
+    # 重要：これでパワコン(192.168.0.142)と直接通信可能になります
     network_mode: "host"
     restart: unless-stopped
     depends_on:
       - influxdb
     environment:
-      - TZ=Asia/Tokyo
+      - TZ=Asia/Tokyo  # これでコンテナ内の時刻が日本時間になります
       - HEMS_IP=192.168.0.142
       - INFLUX_URL=http://localhost:8086
       - INFLUX_TOKEN=my-super-secret-auth-token

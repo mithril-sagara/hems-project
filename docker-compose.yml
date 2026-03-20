@@ -9,11 +9,11 @@ services:
     environment:
       - TZ=Asia/Tokyo
       - INFLUXDB_INIT_MODE=setup
-      - INFLUXDB_INIT_USERNAME=admin
-      - INFLUXDB_INIT_PASSWORD=password1234
+      - INFLUXDB_INIT_USERNAME=wrrc
+      - INFLUXDB_INIT_PASSWORD=Tkl739Tkl739
       - INFLUXDB_INIT_ORG=my-home
       - INFLUXDB_INIT_BUCKET=energy_bucket
-      - INFLUXDB_INIT_ADMIN_TOKEN=my-super-secret-auth-token
+      - INFLUXDB_INIT_ADMIN_TOKEN=AcXpZW0fAIBaNQTYR5J11RDz0oVKpUTmcwr5SGYgmbq1VUnCtMCD3NDTRcbir_9Z7EQoiS28p5vedwGZuqDz0w==
     volumes:
       - influxdb_data:/var/lib/influxdb2
 
@@ -21,15 +21,19 @@ services:
     build: .
     container_name: hems_app
     # 重要：これでパワコン(192.168.0.142)と直接通信可能になります
-    network_mode: "host"
+    # Linuxの場合は、コメントを外す
+    #network_mode: "host"
     restart: unless-stopped
+    ports:
+      - "8000:8000"  # 左側がブラウザで打つポート、右側がFlaskのポート
+      - "3610:3610/udp" # ECHONET用 (UDPを明示)
     depends_on:
       - influxdb
     environment:
       - TZ=Asia/Tokyo  # これでコンテナ内の時刻が日本時間になります
-      - HEMS_IP=192.168.0.142
-      - INFLUX_URL=http://localhost:8086
-      - INFLUX_TOKEN=my-super-secret-auth-token
+      - HEMS_IP=192.168.0.146
+      - INFLUX_URL=http://influxdb:8086
+      - INFLUX_TOKEN=AcXpZW0fAIBaNQTYR5J11RDz0oVKpUTmcwr5SGYgmbq1VUnCtMCD3NDTRcbir_9Z7EQoiS28p5vedwGZuqDz0w==
       - INFLUX_ORG=my-home
       - INFLUX_BUCKET=energy_bucket
     volumes:

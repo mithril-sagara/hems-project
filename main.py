@@ -1,4 +1,4 @@
-import socket, time, threading, requests, json, hmac, hashlib, base64, uuid, calendar, math
+import os, socket, time, threading, requests, json, hmac, hashlib, base64, uuid, calendar, math
 from flask import Flask, jsonify, render_template_string, request
 from datetime import datetime, timedelta
 import pytz
@@ -6,13 +6,13 @@ from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 # --- 基本設定 ---
-IP = "192.168.0.146"
-INFLUX_URL = "http://influxdb:8086"
-INFLUX_TOKEN = "4BQNTU2ZSOm2x5uZZnilDEqS6ydho8ef_QHuSoX-yys31HizDEwKA6SMFjPXqkG14Z6KCqNPjs0C73Uzim11Zg=="
-INFLUX_ORG = "my-home"
-INFLUX_BUCKET = "energy_bucket"
-SB_TOKEN = "29f97ef125186688b34de5fee6bc36f159602d3e8416bb34bf0d71b84eca5ec4eca28fad6f94a7147e4aff25fc743c6b"
-SB_SECRET = "79a5863b39085636ba870b6fb71666f6" 
+IP = os.environ.get("ECHONET_IP", "192.168.0.146")
+INFLUX_URL = os.environ.get("INFLUX_URL", "http://influxdb:8086")
+INFLUX_TOKEN = os.environ.get("INFLUX_TOKEN")
+INFLUX_ORG = os.environ.get("INFLUX_ORG")
+INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET")
+SB_TOKEN = os.environ.get("SB_TOKEN")
+SB_SECRET = os.environ.get("SB_SECRET")
 
 jst = pytz.timezone('Asia/Tokyo')
 app = Flask(__name__)
@@ -142,7 +142,8 @@ def index():
         .btn.active { background: var(--solar); border-color: #fff; }
         .sb-card { background: var(--card); padding: 12px; border-radius: 10px; margin-bottom: 10px; border: 1px solid #334155; }
         svg { position: absolute; width: 100%; height: 100%; pointer-events: none; }
-    </style></head>
+    </style>
+    </head>
     <body>
         <div id="left">
             <div class="area-live">
@@ -175,8 +176,7 @@ def index():
                 <div id="w-weekly" style="display:flex; justify-content:space-between; margin-top:12px; font-size:10px; text-align:center;"></div>
             </div>
             <div class="radar-box">
-                <iframe src="http://weather-gpv.info/parts/bpm.php?model=msm&element=cp&latsc=0&w=300&h=350&area=ks&lx=287&ly=54" width=300 height=350 scrolling=NO frameborder=0 border=0 marginwidth=0 marginheight=0></iframe>
-                <iframe src="http://weather-gpv.info/parts/bpm.php?model=msm&element=wa&latsc=0&w=300&h=350&area=ks&lx=287&ly=54" width=300 height=350 scrolling=NO frameborder=0 border=0 marginwidth=0 marginheight=0></iframe>
+                <iframe src="https://webapp.ydits.net/" width=100% height=100% scrolling=NO frameborder=0 border=0 marginwidth=0 marginheight=0></iframe>
             </div>
             <div id="sb-wrap"></div>
         </div>
@@ -231,13 +231,36 @@ def index():
                 document.getElementById('b-list').classList.toggle('active', v==='list');
             }
 
-            async function loadWeather() {
-                const d = await (await fetch("https://api.open-meteo.com/v1/forecast?latitude=33.45&longitude=130.53&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=Asia%2FTokyo")).json();
-                document.getElementById('w-max').innerText = Math.round(d.daily.temperature_2m_max[0]);
-                document.getElementById('w-min').innerText = Math.round(d.daily.temperature_2m_min[0]);
-                document.getElementById('w-txt').innerText = `本日の降水量: ${d.daily.precipitation_sum[0]}mm`;
-                document.getElementById('w-weekly').innerHTML = d.daily.time.map((t, i) => `<div>${t.slice(8,10)}日<br><span style="font-size:16px;">${d.daily.precipitation_sum[i]>1?'☔':'☀️'}</span><br>${Math.round(d.daily.temperature_2m_max[i])}°</div>`).join('');
-            }
+
+async function loadWeather() {
+    const res = await fetch(
+        "https://api.open-meteo.com/v1/forecast?latitude=33.45&longitude=130.53&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FTokyo"
+    );
+    const d = await res.json();
+
+    // 今日
+    document.getElementById('w-max').innerText = Math.round(d.daily.temperature_2m_max[0]);
+    document.getElementById('w-min').innerText = Math.round(d.daily.temperature_2m_min[0]);
+    document.getElementById('w-txt').innerText =
+        `降水確率: ${d.daily.precipitation_probability_max[0]}%`;
+
+    // 週間
+    document.getElementById('w-weekly').innerHTML =
+        d.daily.time.map((t, i) => {
+            const rain = d.daily.precipitation_probability_max[i];
+            const icon = rain > 50 ? '☔' : '☀️';
+
+            return `
+                <div>
+                    ${t.slice(8,10)}日<br>
+                    <span style="font-size:16px;">${icon}</span><br>
+                    ${Math.round(d.daily.temperature_2m_max[i])}° /
+                    ${Math.round(d.daily.temperature_2m_min[i])}°<br>
+                    <span style="font-size:10px;">${rain}%</span>
+                </div>
+            `;
+        }).join('');
+}
 
             async function loadSB() {
                 const d = await (await fetch('/api/devices')).json();

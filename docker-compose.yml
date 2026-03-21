@@ -6,14 +6,8 @@ services:
     # ホストモード時はports指定不要ですが、管理用に残しておきます
     ports:
       - "8086:8086"
-    environment:
-      - TZ=Asia/Tokyo
-      - INFLUXDB_INIT_MODE=setup
-      - INFLUXDB_INIT_USERNAME=wrrc
-      - INFLUXDB_INIT_PASSWORD=Tkl739Tkl739
-      - INFLUXDB_INIT_ORG=my-home
-      - INFLUXDB_INIT_BUCKET=energy_bucket
-      - INFLUXDB_INIT_ADMIN_TOKEN=4BQNTU2ZSOm2x5uZZnilDEqS6ydho8ef_QHuSoX-yys31HizDEwKA6SMFjPXqkG14Z6KCqNPjs0C73Uzim11Zg==
+    env_file:
+      - .env  # これでコンテナOSの環境変数に登録される
     volumes:
       - influxdb_data:/var/lib/influxdb2
 
@@ -29,13 +23,8 @@ services:
       - "3610:3610/udp" # ECHONET用 (UDPを明示)
     depends_on:
       - influxdb
-    environment:
-      - TZ=Asia/Tokyo  # これでコンテナ内の時刻が日本時間になります
-      - HEMS_IP=192.168.0.146
-      - INFLUX_URL=http://influxdb:8086
-      - INFLUX_TOKEN=4BQNTU2ZSOm2x5uZZnilDEqS6ydho8ef_QHuSoX-yys31HizDEwKA6SMFjPXqkG14Z6KCqNPjs0C73Uzim11Zg==
-      - INFLUX_ORG=my-home
-      - INFLUX_BUCKET=energy_bucket
+    env_file:
+      - .env  # これでコンテナOSの環境変数に登録され
     volumes:
       - .:/app
     working_dir: /app

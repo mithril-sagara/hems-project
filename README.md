@@ -54,9 +54,7 @@ docker-compose up -d --build
 
     InfluxDB管理画面: http://<ラズパイのIP>:8086
 
-        User: admin / Pass: password1234
 
-        Token: my-super-secret-auth-token (docker-compose.ymlで変更可能)
 
 📊 機能詳細
 

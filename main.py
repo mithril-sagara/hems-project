@@ -115,27 +115,78 @@ def control(): return jsonify(requests.post(f"https://api.switch-bot.com/v1.1/de
 @app.route("/")
 def index():
     return render_template_string("""
-    <!DOCTYPE html><html><head><meta charset="UTF-8"><title>HEMS Ultimate</title>
+    <!DOCTYPE html><html lang="ja-jp"><head><meta charset="UTF-8"><title>HEMS Ultimate</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
+<style>
         :root { --bg: #0b1120; --card: #1e293b; --text: #f8fafc; --buy: #f97316; --sell: #22c55e; --solar: #3b82f6; --home: #a855f7; }
         body { margin: 0; font-family: sans-serif; display: flex; height: 100vh; background: var(--bg); color: var(--text); overflow: hidden; }
         #left, #right { width: 50%; height: 100%; display: flex; flex-direction: column; border-right: 1px solid #334155; }
-        .area-live { height: 380px; position: relative; background: #000; flex-shrink: 0; border-bottom: 2px solid #334155; }
+        
+        /* グラフの高さを確保するため、ライブ表示部を少し縮小(380px -> 35vh程度) */
+        .area-live { height: 35vh; min-height: 300px; position: relative; background: #000; flex-shrink: 0; border-bottom: 2px solid #334155; }
         .area-data { flex-grow: 1; display: flex; flex-direction: column; min-height: 0; background: #0f172a; }
-        .weather-card { height: 140px; margin: 10px; padding: 12px; border-radius: 12px; background: linear-gradient(135deg, #1e40af, #0f172a); border: 1px solid #3b82f6; flex-shrink: 0; }
-        .radar-box { height: 350px; margin: 0 10px; border-radius: 12px; overflow: hidden; border: 2px solid #334155; position: relative; flex-shrink: 0; background: #000; display: flex; justify-content: center; }
+        
+        .weather-card { height: 130px; margin: 10px; padding: 12px; border-radius: 12px; background: linear-gradient(135deg, #1e40af, #0f172a); border: 1px solid #3b82f6; flex-shrink: 0; }
+	/* 雨雲レーダー：親の幅を半分にし、中央寄せ */
+        .radar-box { 
+            height: 280px; 
+            width: 100%;
+            margin: 0 auto; 
+            border-radius: 12px; 
+            overflow: hidden; 
+            border: 2px solid #334155; 
+            position: relative; 
+            flex-shrink: 0; 
+            background: #000; 
+        }
+
+        /* iframe：200%で描画したものを0.5倍にして、隙間なくフィットさせる */
+        .radar-box iframe {
+            width: 200% !important; 
+            height: 200% !important;
+            transform: scale(0.5); 
+            transform-origin: 0 0; /* 左上を起点に縮小 */
+            border: none;
+            display: block;
+        }
+
+
+
         #sb-wrap { flex-grow: 1; overflow-y: auto; padding: 10px; background: #0b1120; }
-        #clock { position: absolute; top: 15px; left: 15px; color: var(--solar); font-weight: bold; font-family: monospace; }
-        .node { position: absolute; width: 90px; height: 90px; border-radius: 50%; border: 4px solid #475569; background: #0f172a; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; font-size: 12px; }
-        .node.solar { top: 30px; left: 50%; transform: translateX(-50%); border-color: var(--solar); }
-        .node.grid { top: 140px; left: 60px; border-color: var(--buy); }
-        .node.home { top: 140px; right: 60px; border-color: var(--home); }
-        .solar-total { position: absolute; top: 60px; left: calc(50% + 70px); font-size: 15px; font-weight: bold; color: #94a3b8; }
-        .acc-info { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); width: 94%; display:flex; justify-content:space-between; font-size:15px; background:rgba(30,41,59,0.9); padding:10px; border-radius:8px; border:1px solid #475569; }
-        .data-content { flex-grow: 1; position: relative; overflow: hidden; }
-        #wrap-chart, #wrap-list { width: 100%; height: 100%; position: absolute; overflow-y: auto; }
-        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        #clock { position: absolute; top: 10px; left: 15px; color: var(--solar); font-weight: bold; font-family: monospace; z-index: 20; }
+        .node { position: absolute; width: 80px; height: 80px; border-radius: 50%; border: 4px solid #475569; background: #0f172a; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; font-size: 11px; }
+        .node.solar { top: 20px; left: 50%; transform: translateX(-50%); border-color: var(--solar); }
+        .node.grid { top: 120px; left: 40px; border-color: var(--buy); }
+        .node.home { top: 120px; right: 40px; border-color: var(--home); }
+        .solar-total { position: absolute; top: 50px; left: calc(50% + 65px); font-size: 13px; font-weight: bold; color: #94a3b8; }
+        .acc-info { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 94%; display:flex; justify-content:space-between; font-size:13px; background:rgba(30,41,59,0.9); padding:8px; border-radius:8px; border:1px solid #475569; }
+        .data-content { flex-grow: 1; position: relative; min-height: 0; }
+/* グラフとリストを包むコンテナ */
+        .data-content { 
+            flex-grow: 1; 
+            position: relative; 
+            min-height: 0; /* flex内のスクロールに必須 */
+            overflow: hidden; 
+        }
+
+        /* グラフとリストそれぞれのラップ要素 */
+        #wrap-chart, #wrap-list { 
+            width: 100%; 
+            height: 100%; 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            overflow-y: auto; /* ここで垂直スクロールを許可 */
+            -webkit-overflow-scrolling: touch; /* タブレットでの操作感を滑らかに */
+        }
+
+        /* テーブルが親の幅を超えないように固定 */
+        table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            font-size: 11px; 
+            table-layout: fixed; /* 列幅を固定してはみ出しを防止 */
+        }
         th { background: #1e293b; padding: 8px; border-bottom: 2px solid #334155; position: sticky; top: 0; z-index: 20; }
         td { padding: 8px; border-bottom: 1px solid #1e293b; text-align: center; }
         .btn { padding: 5px 10px; font-size: 11px; border: 1px solid #475569; border-radius: 4px; cursor: pointer; background: #1e293b; color: #fff; }
@@ -183,7 +234,11 @@ def index():
 
         <script>
             let chart; const rafs = {};
-            document.getElementById('sel-d').valueAsDate = new Date();
+// 現在のJST（日本時間）の日付を YYYY-MM-DD 形式で取得してセット
+const now = new Date();
+const jstDate = new Date(now.getTime() + (9 * 60 * 60 * 1000)); // 9時間加算
+const dateStr = jstDate.toISOString().split('T')[0];
+document.getElementById('sel-d').value = dateStr;
 
             function anim(dotId, pathId, val) {
                 const dot = document.getElementById(dotId), path = document.getElementById(pathId);
@@ -204,24 +259,76 @@ def index():
                 anim('d-s2h', 'p-s2h', Math.min(d.solar, d.home)); anim('d-s2g', 'p-s2g', d.sell); anim('d-g2h', 'p-g2h', d.buy);
             }
 
-            async function loadData() {
-                const u = document.getElementById('sel-u').value, d = document.getElementById('sel-d').value;
-                const data = await (await fetch(`/api/history?unit=${u}&date=${d}`)).json();
-                chart.data.labels = data.labels;
-                chart.data.datasets = [
-                    {label:'買電', type:'bar', backgroundColor:'#f97316', data:data.buy},
-                    {label:'売電', type:'bar', backgroundColor:'#22c55e', data:data.sell},
-                    {label:'発電', type:'line', borderColor:'#3b82f6', data:data.solar, pointRadius:4, pointBackgroundColor:'#3b82f6', tension:0.2},
-                    {label:'消費', type:'line', borderColor:'#a855f7', data:data.home, pointRadius:4, pointBackgroundColor:'#a855f7', tension:0.2}
-                ];
-                if(u==='day') chart.data.datasets.push({label:'予測', type:'line', borderColor:'#475569', borderDash:[5,5], data:data.forecast, pointRadius:0});
-                chart.update();
+async function loadData() {
+                const unitEl = document.getElementById('sel-u');
+                const dateEl = document.getElementById('sel-d');
 
-                const f = (v) => (v === null || v === undefined) ? '-' : v;
-                let h = `<th>期間</th><th>買</th><th>売</th><th>発</th><th>消</th><th>買(¥)</th><th>売(¥)</th><th>天気</th><th>日射</th>`;
-                if(u==='day') h += `<th>予測</th>`;
-                document.getElementById('table-head').innerHTML = h;
-                document.getElementById('list-body').innerHTML = data.labels.map((l, i) => `<tr><td>${l}</td><td>${f(data.buy[i])}</td><td>${f(data.sell[i])}</td><td>${f(data.solar[i])}</td><td>${f(data.home[i])}</td><td>${f(data.buy_yen[i])}</td><td>${f(data.sell_yen[i])}</td><td>-</td><td>-</td>${u==='day'?`<td>${f(data.forecast[i])}</td>`:''}</tr>`).join('');
+                // 1. 日付が未設定（初期表示時）の場合、JSTの今日をセット
+                if (!dateEl.value) {
+                    const now = new Date();
+                    const jstDate = new Date(now.getTime() + (9 * 60 * 60 * 1000));
+                    dateEl.value = jstDate.toISOString().split('T')[0];
+                }
+
+                const u = unitEl.value;
+                const d = dateEl.value;
+
+                try {
+                    // 2. APIからデータ取得
+                    const response = await fetch(`/api/history?unit=${u}&date=${d}`);
+                    if (!response.ok) throw new Error('Network response was not ok');
+                    const data = await response.json();
+
+                    // 3. グラフの更新
+                    chart.data.labels = data.labels;
+                    chart.data.datasets = [
+                        {label:'買電', type:'bar', backgroundColor:'#f97316', data:data.buy, order: 2},
+                        {label:'売電', type:'bar', backgroundColor:'#22c55e', data:data.sell, order: 2},
+                        {label:'発電', type:'line', borderColor:'#3b82f6', data:data.solar, pointRadius:4, pointBackgroundColor:'#3b82f6', tension:0.2, order: 1},
+                        {label:'消費', type:'line', borderColor:'#a855f7', data:data.home, pointRadius:4, pointBackgroundColor:'#a855f7', tension:0.2, order: 1}
+                    ];
+
+                    // 日別表示の時だけ「予測」ラインを追加
+                    if (u === 'day' && data.forecast) {
+                        chart.data.datasets.push({
+                            label:'予測', type:'line', borderColor:'#475569', borderDash:[5,5], 
+                            data:data.forecast, pointRadius:0, order: 3
+                        });
+                    }
+                    chart.update();
+
+                    // 4. リスト（テーブル）の更新
+                    const f = (v) => (v === null || v === undefined) ? '-' : v;
+                    
+                    // ヘッダーの生成
+                    let h = `<th>期間</th><th>買</th><th>売</th><th>発</th><th>消</th><th>買(¥)</th><th>売(¥)</th><th>天気</th><th>日射</th>`;
+                    if (u === 'day') h += `<th>予測</th>`;
+                    document.getElementById('table-head').innerHTML = h;
+
+                    // ボディ（行）の生成
+                    document.getElementById('list-body').innerHTML = data.labels.map((l, i) => {
+                        let row = `<tr>
+                            <td>${l}</td>
+                            <td>${f(data.buy[i])}</td>
+                            <td>${f(data.sell[i])}</td>
+                            <td>${f(data.solar[i])}</td>
+                            <td>${f(data.home[i])}</td>
+                            <td>${f(data.buy_yen[i])}</td>
+                            <td>${f(data.sell_yen[i])}</td>
+                            <td>-</td>
+                            <td>-</td>`;
+                        if (u === 'day') row += `<td>${f(data.forecast[i])}</td>`;
+                        row += `</tr>`;
+                        return row;
+                    }).join('');
+
+                    // 5. スクロール位置をリセット（リスト切り替え時の操作性向上）
+                    document.getElementById('wrap-list').scrollTop = 0;
+                    document.getElementById('wrap-chart').scrollTop = 0;
+
+                } catch (error) {
+                    console.error('Failed to load data:', error);
+                }
             }
 
             function setView(v) {

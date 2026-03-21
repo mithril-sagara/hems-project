@@ -28,8 +28,18 @@ HEMS Dashboard (InfluxDB & Docker Edition)
 リポジトリ直下に .env ファイルを作成し、環境に合わせて修正してください。
 コード スニペット
 
-HEMS_IP=192.168.0.142  # 太陽光パワコン/蓄電池のIPアドレス
-TZ=Asia/Tokyo
+# ネットワーク・機器設定
+ECHONET_IP=192.168.0.146
+
+# InfluxDB設定
+INFLUX_URL=http://influxdb:8086
+INFLUX_TOKEN=<YOUR TOKEN>
+INFLUX_ORG=my-home
+INFLUX_BUCKET=energy_bucket
+
+# SwitchBot設定
+SB_TOKEN=<YOUR TOKEN>
+SB_SECRET=<YOUR SECRET>
 
 3. 起動
 

@@ -3,6 +3,8 @@ services:
     image: influxdb:2.7
     container_name: influxdb
     restart: unless-stopped
+    environment:
+      - TZ=Asia/Tokyo
     # ホストモード時はports指定不要ですが、管理用に残しておきます
     ports:
       - "8086:8086"
@@ -10,6 +12,8 @@ services:
       - .env  # これでコンテナOSの環境変数に登録される
     volumes:
       - influxdb_data:/var/lib/influxdb2
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
 
   hems-app:
     build: .
@@ -18,6 +22,8 @@ services:
     # Linuxの場合は、コメントを外す
     #network_mode: "host"
     restart: unless-stopped
+    environment:
+      - TZ=Asia/Tokyo
     ports:
       - "8000:8000"  # 左側がブラウザで打つポート、右側がFlaskのポート
       - "3610:3610/udp" # ECHONET用 (UDPを明示)
@@ -27,6 +33,8 @@ services:
       - .env  # これでコンテナOSの環境変数に登録され
     volumes:
       - .:/app
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     working_dir: /app
 
 volumes:

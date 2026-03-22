@@ -49,7 +49,9 @@ def get_ai_adjustment():
 app = Flask(__name__)
 
 def get_unit_price(dt):
+    # 電化でナイト・セレクト21 (夜間 21-7時)
     if dt.hour >= 21 or dt.hour < 7: return 16.60
+    # 昼間 (夏季 7,8,9月は高い)
     return 33.80 if dt.month in [7, 8, 9] else 28.60
 
 def fetch_echonet(eoj, epc):
@@ -63,18 +65,13 @@ def fetch_echonet(eoj, epc):
             return data[idx+2 : idx+2+data[idx+1]]
     except: return None
 
-latest = {"solar": 0, "buy": 0, "sell": 0, "home": 0, "d_buy_k": 0, "d_buy_y": 0, "d_sell_k": 0, "d_sell_y": 0, "d_solar_t": 0}
-totals = {"buy_kwh": 0.0, "sell_kwh": 0.0, "buy_yen": 0.0, "sell_yen": 0.0, "solar_kwh": 0.0, "day": ""}
+latest_instant = {"solar": 0, "buy": 0, "sell": 0, "home": 0}
 
 def collector():
-    global totals
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     write_api = client.write_api(write_options=SYNCHRONOUS)
     while True:
         try:
-            now = datetime.now(jst)
-            if totals["day"] != now.strftime("%Y-%m-%d"):
-                totals = {"buy_kwh": 0.0, "sell_kwh": 0.0, "buy_yen": 0.0, "sell_yen": 0.0, "solar_kwh": 0.0, "day": now.strftime("%Y-%m-%d")}
             res_s = fetch_echonet([0x02, 0x79, 0x01], 0xE0)
             res_m = fetch_echonet([0x02, 0xA5, 0x01], 0xF5)
             solar = int.from_bytes(res_s, "big", signed=True) if res_s else 0
@@ -83,28 +80,40 @@ def collector():
                 val = int.from_bytes(res_m[0:4], "big", signed=True)
                 if val >= 0: sell = val; buy = 0
                 else: sell = 0; buy = abs(val)
-            step = (5/3600.0)
-            totals["buy_kwh"] += (buy/1000.0)*step
-            totals["buy_yen"] += (buy/1000.0)*step * get_unit_price(now)
-            totals["solar_kwh"] += (solar/1000.0)*step
-            totals["sell_kwh"] += (sell/1000.0)*step
-            totals["sell_yen"] += (sell/1000.0)*step * 7.0
-            latest.update({
-                "solar": solar, "buy": buy, "sell": sell, "home": max(0, solar+buy-sell),
-                "d_buy_k": round(totals["buy_kwh"], 2), "d_buy_y": int(totals["buy_yen"]),
-                "d_sell_k": round(totals["sell_kwh"], 2), "d_sell_y": int(totals["sell_yen"]),
-                "d_solar_t": round(totals["solar_kwh"], 2)
-            })
-            p = Point("energy").field("solar", float(solar)).field("buy", float(buy)).field("sell", float(sell)).field("home", float(latest["home"]))
+            home = max(0, solar + buy - sell)
+            latest_instant.update({"solar": solar, "buy": buy, "sell": sell, "home": home})
+            p = Point("energy").field("solar", float(solar)).field("buy", float(buy)).field("sell", float(sell)).field("home", float(home))
             write_api.write(bucket=INFLUX_BUCKET, record=p)
         except: pass
         time.sleep(5)
 
 @app.route("/api/live")
-def api_live(): 
-    d = latest.copy()
-    d["ai_ratio"] = round(ai_ratio, 3)
-    return jsonify(d)
+def api_live():
+    client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
+    now = datetime.now(jst)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    query = f'from(bucket:"{INFLUX_BUCKET}") |> range(start: {start.isoformat()}) |> aggregateWindow(every: 1h, fn: mean, createEmpty: true)'
+    sums = {"buy_k": 0.0, "sell_k": 0.0, "solar_k": 0.0, "buy_y": 0, "sell_y": 0}
+    try:
+        tables = client.query_api().query(query)
+        for t in tables:
+            fld = t.records[0].get_field()
+            for i, r in enumerate(t.records):
+                val = r.get_value()
+                if val is not None:
+                    kwh = val / 1000.0
+                    if fld == "buy":
+                        sums["buy_k"] += kwh
+                        sums["buy_y"] += int(kwh * get_unit_price(start + timedelta(hours=i)))
+                    elif fld == "sell":
+                        sums["sell_k"] += kwh
+                        sums["sell_y"] += int(kwh * 7.0)
+                    elif fld == "solar":
+                        sums["solar_k"] += kwh
+    except: pass
+    res = latest_instant.copy()
+    res.update({"d_buy_k": round(sums["buy_k"], 2), "d_buy_y": sums["buy_y"], "d_sell_k": round(sums["sell_k"], 2), "d_sell_y": sums["sell_y"], "d_solar_t": round(sums["solar_k"], 2), "ai_ratio": round(get_ai_adjustment(), 3)})
+    return jsonify(res)
 
 @app.route("/api/history")
 def api_history():
@@ -112,6 +121,7 @@ def api_history():
     d_str = request.args.get("date", datetime.now(jst).strftime("%Y-%m-%d"))
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     current_ratio = get_ai_adjustment()
+    
     if u == "day":
         start = jst.localize(datetime.strptime(d_str, "%Y-%m-%d")); stop = start + timedelta(days=1); window = "1h"
         labels = [f"{i:02d}:00" for i in range(24)]
@@ -122,6 +132,7 @@ def api_history():
     else:
         y = int(d_str.split("-")[0]); start = jst.localize(datetime(y, 1, 1)); stop = jst.localize(datetime(y+1, 1, 1))
         window = "1mo"; labels = [f"{i}月" for i in range(1, 13)]
+    
     res_d = {f: [None]*len(labels) for f in ["buy", "sell", "solar", "home"]}
     query = f'from(bucket:"{INFLUX_BUCKET}") |> range(start: {start.isoformat()}, stop: {stop.isoformat()}) |> aggregateWindow(every: {window}, fn: mean, createEmpty: true)'
     try:
@@ -130,11 +141,20 @@ def api_history():
             fld = t.records[0].get_field()
             if fld in res_d:
                 for i, r in enumerate(t.records):
-                    if i < len(labels) and r.get_value() is not None: res_d[fld][i] = round(r.get_value()/1000.0, 2)
+                    if i < len(labels) and r.get_value() is not None:
+                        val = r.get_value() / 1000.0
+                        # 月・年単位の場合は平均値から合計値に換算
+                        if u == "month": val *= 24
+                        elif u == "year":
+                            _, m_days = calendar.monthrange(start.year, i+1)
+                            val *= (24 * m_days)
+                        res_d[fld][i] = round(val, 2)
     except: pass
+    
     forecast, w_codes, irradiances = [None]*len(labels), ["-"]*len(labels), ["-"]*len(labels)
-    if u == "day":
-        try:
+    # 天気情報の取得（Open-Meteo）
+    try:
+        if u == "day":
             w_url = f"https://api.open-meteo.com/v1/forecast?latitude=33.45&longitude=130.53&hourly=weather_code,shortwave_radiation&timezone=Asia%2FTokyo&start_date={d_str}&end_date={d_str}"
             w_res = requests.get(w_url).json()
             m_num = int(d_str.split("-")[1])
@@ -142,9 +162,34 @@ def api_history():
             forecast = [round(min((w / 1000.0) * PANEL_CAPACITY * dynamic_coeff, PANEL_CAPACITY), 2) for w in w_res['hourly']['shortwave_radiation']]
             w_codes = w_res['hourly']['weather_code']
             irradiances = [round(w, 0) for w in w_res['hourly']['shortwave_radiation']]
-        except: pass
-    by = [int(v * get_unit_price(start + timedelta(hours=i))) if v is not None and u=="day" else None for i, v in enumerate(res_d["buy"])]
-    return jsonify({"labels": labels, "buy": res_d["buy"], "sell": res_d["sell"], "solar": res_d["solar"], "home": res_d["home"], "buy_yen": by, "sell_yen": [int(v*7) if v else None for v in res_d["sell"]], "forecast": forecast, "weather": w_codes, "irradiance": irradiances, "ai_ratio": round(current_ratio, 3)})
+        elif u == "month":
+            w_url = f"https://api.open-meteo.com/v1/forecast?latitude=33.45&longitude=130.53&daily=weather_code,shortwave_radiation_sum&timezone=Asia%2FTokyo&start_date={start.strftime('%Y-%m-%d')}&end_date={(stop-timedelta(days=1)).strftime('%Y-%m-%d')}"
+            w_res = requests.get(w_url).json()
+            w_codes = w_res['daily']['weather_code']
+            irradiances = [round(w, 1) for w in w_res['daily']['shortwave_radiation_sum']]
+        elif u == "year":
+            # 年間は日射量のみ（天気実績の羅列は避ける）
+            w_url = f"https://api.open-meteo.com/v1/forecast?latitude=33.45&longitude=130.53&daily=shortwave_radiation_sum&timezone=Asia%2FTokyo&start_date={start.strftime('%Y-%m-%d')}&end_date={(stop-timedelta(days=1)).strftime('%Y-%m-%d')}"
+            w_res = requests.get(w_url).json()
+            # 月ごとに集計
+            irradiances = [0.0]*12
+            for i, d_str_w in enumerate(w_res['daily']['time']):
+                m_idx = int(d_str_w.split("-")[1]) - 1
+                irradiances[m_idx] += w_res['daily']['shortwave_radiation_sum'][i]
+            irradiances = [round(v, 1) for v in irradiances]
+    except: pass
+    
+    # 金額計算
+    by = []
+    if u == "day":
+        by = [int(v * get_unit_price(start + timedelta(hours=i))) if v is not None else None for i, v in enumerate(res_d["buy"])]
+    else:
+        # 月・年単位は簡易平均単価(28円)で算出
+        by = [int(v * 28) if v is not None else None for v in res_d["buy"]]
+    
+    sy = [int(v * 16) if v is not None else None for v in res_d["sell"]]
+    
+    return jsonify({"labels": labels, "buy": res_d["buy"], "sell": res_d["sell"], "solar": res_d["solar"], "home": res_d["home"], "buy_yen": by, "sell_yen": sy, "forecast": forecast, "weather": w_codes, "irradiance": irradiances, "ai_ratio": round(current_ratio, 3)})
 
 def sb_headers():
     t, nonce = str(int(time.time()*1000)), str(uuid.uuid4())
@@ -165,7 +210,6 @@ def index():
     <style>
         :root { --bg: #0b1120; --card: #1e293b; --text: #f8fafc; --buy: #f97316; --sell: #22c55e; --solar: #3b82f6; --home: #a855f7; }
         body { margin: 0; font-family: 'Segoe UI', sans-serif; display: flex; height: 100vh; background: var(--bg); color: var(--text); overflow: hidden; }
-        :fullscreen { background-color: var(--bg); }
         #left, #right { width: 50%; height: 100%; display: flex; flex-direction: column; border-right: 1px solid #334155; }
         .area-live { height: 280px; position: relative; background: #000; flex-shrink: 0; border-bottom: 2px solid #334155; }
         .area-data { flex-grow: 1; display: flex; flex-direction: column; min-height: 0; background: #0f172a; }
@@ -175,27 +219,28 @@ def index():
         .radar-box { height: 280px; margin: 0 10px 10px 10px; border-radius: 12px; overflow: hidden; border: 1px solid #334155; background: #000; flex-shrink: 0; }
         #sb-wrap { flex-grow: 1; overflow-y: auto; padding: 10px; }
         #clock { position: absolute; top: 10px; left: 15px; color: var(--solar); font-weight: bold; font-family: monospace; z-index: 20; cursor: pointer; }
-        #ai-stat { position: absolute; top: 30px; left: 15px; font-size: 10px; color: #64748b; z-index: 20; }
         .node { position: absolute; width: 85px; height: 85px; border-radius: 50%; border: 4px solid #475569; background: #0f172a; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; font-size: 12px; }
         .node.solar { top: 20px; left: 50%; transform: translateX(-50%); border-color: var(--solar); }
         .node.grid { top: 125px; left: 50px; border-color: var(--buy); }
         .node.home { top: 125px; right: 50px; border-color: var(--home); }
         .solar-total { position: absolute; top: 55px; left: calc(50% + 65px); font-size: 15px; font-weight: bold; color: #cbd5e1; white-space: nowrap; }
-        .acc-info { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); width: 92%; display:flex; justify-content:space-between; font-size:14px; background:rgba(30,41,59,0.9); padding:10px; border-radius:10px; border:1px solid #475569; }
-        table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
-        th { background: #1e293b; padding: 8px; border-bottom: 2px solid #334155; position: sticky; top: 0; z-index: 30; }
-        td { padding: 8px; border-bottom: 1px solid #1e293b; text-align: center; color: #cbd5e1; }
+        .acc-info { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); width: 92%; display:flex; justify-content:space-between; font-size:15px; background:rgba(30,41,59,0.9); padding:10px; border-radius:10px; border:1px solid #475569; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
+        th { background: #1e293b; padding: 6px; border-bottom: 2px solid #334155; position: sticky; top: 0; }
+        td { padding: 6px; border-bottom: 1px solid #1e293b; text-align: center; color: #cbd5e1; }
         .btn { padding: 6px 12px; font-size: 12px; border: 1px solid #475569; border-radius: 6px; cursor: pointer; background: #1e293b; color: #fff; }
         .btn.active { background: var(--solar); border-color: #fff; }
         .sb-card { background: var(--card); padding: 12px; border-radius: 10px; margin-bottom: 10px; border: 1px solid #334155; }
+        .ac-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 8px; }
+        .ac-btn { font-size: 10px; padding: 4px; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #fff; cursor: pointer; }
+        .ac-btn.on { background: #ef4444; } .ac-btn.off { background: #475569; }
         svg { position: absolute; width: 100%; height: 100%; pointer-events: none; }
     </style>
     </head>
     <body>
         <div id="left">
             <div class="area-live">
-                <div id="clock" onclick="toggleFullScreen()" title="クリックで全画面"></div>
-                <div id="ai-stat">AI Ratio: <span id="v-ai">1.000</span></div>
+                <div id="clock" onclick="toggleFullScreen()"></div>
                 <svg viewBox="0 0 600 320">
                     <path id="p-s2h" d="M 300 110 V 170 H 465" stroke="#1e293b" stroke-width="8" fill="none" />
                     <path id="p-s2g" d="M 300 110 V 170 H 135" stroke="#1e293b" stroke-width="8" fill="none" />
@@ -246,21 +291,30 @@ def index():
 
         <script>
             let mainChart; const rafs = {};
-            const getWeatherDetails = (code) => {
-                const map = {
-                    0:{icon:'☀️',text:'快晴'}, 1:{icon:'🌤',text:'晴れ'}, 2:{icon:'⛅',text:'時々曇り'}, 3:{icon:'☁️',text:'曇り'},
-                    45:{icon:'🌫',text:'霧'}, 48:{icon:'🌫',text:'着氷性の霧'}, 51:{icon:'🌦',text:'霧雨'}, 53:{icon:'🌦',text:'霧雨'}, 55:{icon:'🌦',text:'霧雨'},
-                    61:{icon:'☔',text:'小雨'}, 63:{icon:'☔',text:'雨'}, 65:{icon:'🌊',text:'大雨'},
-                    71:{icon:'❄️',text:'小雪'}, 73:{icon:'❄️',text:'雪'}, 75:{icon:'☃️',text:'大雪'}, 80:{icon:'🚿',text:'にわか雨'}, 82:{icon:'⛈',text:'激しい雨'},
-                    95:{icon:'⚡',text:'雷雨'}, 99:{icon:'🌪',text:'強雷雨'}
-                };
-                return map[code] || {icon:'❓',text:'不明'};
-            };
+const getWeatherDetails = (code) => {
+    const map = {
+        0:  { icon: '☀️', text: '快晴', bg: 'linear-gradient(135deg, #0ea5e9, #3b82f6)' },
+        1:  { icon: '🌤️', text: '晴れ', bg: 'linear-gradient(135deg, #3b82f6, #6366f1)' },
+        2:  { icon: '⛅', text: '時々曇り', bg: 'linear-gradient(135deg, #64748b, #3b82f6)' },
+        3:  { icon: '☁️', text: '曇り', bg: 'linear-gradient(135deg, #475569, #1e293b)' },
+        45: { icon: '🌫️', text: '霧',   bg: 'linear-gradient(135deg, #94a3b8, #475569)' },
+        61: { icon: '☔', text: '小雨', bg: 'linear-gradient(135deg, #1e3a8a, #1e293b)' },
+        63: { icon: '☔', text: '雨',   bg: 'linear-gradient(135deg, #0f172a, #1e3a8a)' },
+        65: { icon: '🌊', text: '大雨', bg: 'linear-gradient(135deg, #000000, #1e3a8a)' },
+        71: { icon: '❄️', text: '小雪', bg: 'linear-gradient(135deg, #e2e8f0, #94a3b8)' },
+        80: { icon: '🚿', text: 'にわか雨', bg: 'linear-gradient(135deg, #334155, #1e40af)' },
+        95: { icon: '⚡', text: '雷雨', bg: 'linear-gradient(135deg, #4c1d95, #0f172a)' }
+    };
+    // 範囲外のコードも代表的な色にマッピング
+    if (!map[code]) {
+        if (code >= 51 && code <= 57) return { ...map[61], text: '霧雨' };
+        if (code >= 71 && code <= 77) return { ...map[71], text: '雪' };
+        if (code >= 81 && code <= 82) return { ...map[80], text: '強いにわか雨' };
+    }
+    return map[code] || { icon: '❓', text: '不明', bg: 'linear-gradient(135deg, #1e293b, #0f172a)' };
+};
 
-            function toggleFullScreen() {
-                if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-                else document.exitFullscreen();
-            }
+            function toggleFullScreen() { if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); }
 
             function anim(dotId, pathId, val) {
                 const dot = document.getElementById(dotId), path = document.getElementById(pathId);
@@ -279,34 +333,31 @@ def index():
                 document.getElementById('v-home').innerText = d.home; document.getElementById('v-s-t').innerText = d.d_solar_t;
                 document.getElementById('v-bk').innerText = d.d_buy_k; document.getElementById('v-by').innerText = d.d_buy_y;
                 document.getElementById('v-sk').innerText = d.d_sell_k; document.getElementById('v-sy').innerText = d.d_sell_y;
-                document.getElementById('v-ai').innerText = d.ai_ratio;
                 anim('d-s2h', 'p-s2h', Math.min(d.solar, d.home)); anim('d-s2g', 'p-s2g', d.sell); anim('d-g2h', 'p-g2h', d.buy);
             }
 
             async function loadData() {
                 const u = document.getElementById('sel-u').value, d = document.getElementById('sel-d').value;
                 const res = await (await fetch(`/api/history?unit=${u}&date=${d}`)).json();
-                
-                // グラフ更新 (作り直しではなくupdateでちらつき防止)
                 mainChart.data.labels = res.labels;
                 mainChart.data.datasets = [
-                    {label:'買電', type:'bar', backgroundColor:'#f97316', data:res.buy, order:2},
-                    {label:'売電', type:'bar', backgroundColor:'#22c55e', data:res.sell, order:2},
-                    {label:'発電', type:'line', borderColor:'#3b82f6', backgroundColor:'#3b82f6', data:res.solar, pointRadius:4, tension:0.2, order:1},
-                    {label:'消費', type:'line', borderColor:'#a855f7', backgroundColor:'#a855f7', data:res.home, pointRadius:4, tension:0.2, order:1}
+                    {label:'買電', type:'bar', backgroundColor:'#f97316', data:res.buy},
+                    {label:'売電', type:'bar', backgroundColor:'#22c55e', data:res.sell},
+                    {label:'発電', type:'line', borderColor:'#3b82f6', backgroundColor:'#3b82f6', data:res.solar, pointRadius:4, tension:0.2},
+                    {label:'消費', type:'line', borderColor:'#a855f7', backgroundColor:'#a855f7', data:res.home, pointRadius:4, tension:0.2}
                 ];
-                if(u==='day') mainChart.data.datasets.push({label:'AI予測', type:'line', borderColor:'#94a3b8', borderDash:[5,5], data:res.forecast, pointRadius:0, order:3});
+                if(u==='day') mainChart.data.datasets.push({label:'AI予測', type:'line', borderColor:'#94a3b8', borderDash:[5,5], data:res.forecast, pointRadius:0});
                 mainChart.update('none');
 
-                // リスト更新
-                const getWStr = (c) => { if (c === "-") return "-"; const w = getWeatherDetails(c); return `${w.icon} ${w.text}`; };
-                const f = (v) => (v === null || v === undefined) ? '-' : v;
+                const f = (v) => (v === null || v === undefined || v === "-") ? '-' : v;
                 let h = `<th>期間</th><th>買(kW)</th><th>売(kW)</th><th>発(kW)</th><th>消(kW)</th><th>買(¥)</th><th>売(¥)</th>`;
-                if(u==='day') h += `<th>天気</th><th>日射</th><th>予測</th>`;
+                if(u==='day' || u==='month') h += `<th>天気</th><th>日射</th>`;
+                if(u==='day') h += `<th>予測</th>`;
                 document.getElementById('table-head').innerHTML = h;
                 document.getElementById('list-body').innerHTML = res.labels.map((l, i) => {
                     let r = `<tr><td>${l}</td><td>${f(res.buy[i])}</td><td>${f(res.sell[i])}</td><td>${f(res.solar[i])}</td><td>${f(res.home[i])}</td><td>${f(res.buy_yen[i])}</td><td>${f(res.sell_yen[i])}</td>`;
-                    if(u==='day') r += `<td>${getWStr(res.weather[i])}</td><td>${f(res.irradiance[i])}</td><td>${f(res.forecast[i])}</td>`;
+                    if(u==='day' || u==='month') r += `<td>${res.weather[i]!=='-'?getWeatherDetails(res.weather[i]).icon:'-'}</td><td>${f(res.irradiance[i])}</td>`;
+                    if(u==='day') r += `<td>${f(res.forecast[i])}</td>`;
                     return r + `</tr>`;
                 }).join('');
             }
@@ -318,25 +369,55 @@ def index():
                 document.getElementById('b-list').classList.toggle('active', v==='list');
             }
 
-            async function loadWeather() {
-                const res = await (await fetch("https://api.open-meteo.com/v1/forecast?latitude=33.45&longitude=130.53&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FTokyo")).json();
-                document.getElementById('w-max').innerText = Math.round(res.daily.temperature_2m_max[0]);
-                document.getElementById('w-min').innerText = Math.round(res.daily.temperature_2m_min[0]);
-                document.getElementById('w-txt').innerText = `降水確率: ${res.daily.precipitation_probability_max[0]}%`;
-                document.getElementById('w-weekly').innerHTML = res.daily.time.map((t, i) => `<div>${t.slice(8,10)}日<br><span style="font-size:18px;">${getWeatherDetails(res.daily.weather_code[i]).icon}</span><br>${Math.round(res.daily.temperature_2m_max[i])}°/${Math.round(res.daily.temperature_2m_min[i])}°</div>`).join('');
-            }
+/* --- loadWeather をアップデート --- */
+async function loadWeather() {
+    const res = await (await fetch("https://api.open-meteo.com/v1/forecast?latitude=33.45&longitude=130.53&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia%2FTokyo")).json();
+    
+    // 今日の天気詳細を取得
+    const todayCode = res.daily.weather_code[0];
+    const details = getWeatherDetails(todayCode);
+    
+    // 背景色とアイコンの更新
+    const card = document.querySelector('.weather-card');
+    card.style.background = details.bg;
+    
+    document.getElementById('w-max').innerText = Math.round(res.daily.temperature_2m_max[0]);
+    document.getElementById('w-min').innerText = Math.round(res.daily.temperature_2m_min[0]);
+    document.getElementById('w-txt').innerHTML = `<span class="weather-icon-anim">${details.icon}</span> ${details.text} (降水: ${res.daily.precipitation_probability_max[0]}%)`;
+    
+    // 週報部分も同様に
+    document.getElementById('w-weekly').innerHTML = res.daily.time.map((t, i) => {
+        const d = getWeatherDetails(res.daily.weather_code[i]);
+        return `<div>${t.slice(8,10)}日<br><span style="font-size:18px;">${d.icon}</span><br>${Math.round(res.daily.temperature_2m_max[i])}°</div>`;
+    }).join('');
+}
 
             async function loadSB() {
                 const d = await (await fetch('/api/devices')).json();
                 const wrap = document.getElementById('sb-wrap'); wrap.innerHTML = '';
                 (d.deviceList || []).concat(d.infraredRemoteList || []).forEach(v => {
                     const card = document.createElement('div'); card.className = "sb-card";
-                    card.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center;"><strong>${v.deviceName || v.remoteName}</strong><div><button class="btn" onclick="ctrl('${v.deviceId}','turnOn')">ON</button><button class="btn" onclick="ctrl('${v.deviceId}','turnOff')">OFF</button></div></div>`;
-                    wrap.appendChild(card);
+                    const isAC = v.deviceType === "Air Conditioner";
+                    let html = `<div style="display:flex; justify-content:space-between; align-items:center;"><strong>${v.deviceName || v.remoteName}</strong>`;
+                    if(isAC) {
+                        html += `<div><button class="ac-btn on" onclick="ctrlAC('${v.deviceId}','on')">ON</button><button class="ac-btn off" onclick="ctrlAC('${v.deviceId}','off')">OFF</button></div></div>`;
+                        html += `<div class="ac-controls">
+                            <select onchange="ctrlAC('${v.deviceId}','mode',this.value)" class="ac-btn"><option>冷房</option><option>暖房</option><option>除湿</option></select>
+                            <input type="number" value="26" min="18" max="30" onchange="ctrlAC('${v.deviceId}','temp',this.value)" class="ac-btn">
+                        </div>`;
+                    } else {
+                        html += `<div><button class="btn" onclick="ctrl('${v.deviceId}','turnOn')">ON</button><button class="btn" onclick="ctrl('${v.deviceId}','turnOff')">OFF</button></div></div>`;
+                    }
+                    card.innerHTML = html; wrap.appendChild(card);
                 });
             }
 
             function ctrl(id, cmd) { fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deviceId:id, payload:{command:cmd, parameter:'default', commandType:'command'}})}); }
+            function ctrlAC(id, type, val) {
+                let cmd = "setAll"; 
+                let param = type === 'on' ? "26,2,1,on" : type === 'off' ? "26,2,1,off" : `26,2,1,on`; // 簡易パラメータ化
+                fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deviceId:id, payload:{command:cmd, parameter:param, commandType:'command'}})});
+            }
 
             document.getElementById('sel-d').value = new Date(Date.now() + 9*3600000).toISOString().split('T')[0];
             mainChart = new Chart(document.getElementById('mainChart').getContext('2d'), { type:'bar', options:{ responsive:true, maintainAspectRatio:false, animation: {duration: 0}, plugins:{legend:{position:'bottom', labels:{color:'#94a3b8', boxWidth:12}}}, scales:{y:{beginAtZero:true, grid:{color:'#1e293b'}, ticks:{color:'#64748b'}}, x:{grid:{display:false}, ticks:{color:'#64748b'}}} } });

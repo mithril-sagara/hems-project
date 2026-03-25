@@ -121,35 +121,76 @@ def api_history():
     d_str = request.args.get("date", datetime.now(jst).strftime("%Y-%m-%d"))
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     current_ratio = get_ai_adjustment()
+    now = datetime.now(jst)
     
+    # 範囲設定
     if u == "day":
-        start = jst.localize(datetime.strptime(d_str, "%Y-%m-%d")); stop = start + timedelta(days=1); window = "1h"
+        start = jst.localize(datetime.strptime(d_str, "%Y-%m-%d"))
+        stop = start + timedelta(days=1)
+        window = "1h"
         labels = [f"{i:02d}:00" for i in range(24)]
     elif u == "month":
-        y, m, _ = map(int, d_str.split("-")); start = jst.localize(datetime(y, m, 1))
-        ld = calendar.monthrange(y, m)[1]; stop = start + timedelta(days=ld)
-        window = "1d"; labels = [f"{i}日" for i in range(1, ld + 1)]
+        y, m, _ = map(int, d_str.split("-"))
+        start = jst.localize(datetime(y, m, 1))
+        ld = calendar.monthrange(y, m)[1]
+        stop = start + timedelta(days=ld)
+        window = "1d"
+        labels = [f"{i}日" for i in range(1, ld + 1)]
     else:
-        y = int(d_str.split("-")[0]); start = jst.localize(datetime(y, 1, 1)); stop = jst.localize(datetime(y+1, 1, 1))
-        window = "1mo"; labels = [f"{i}月" for i in range(1, 13)]
+        y = int(d_str.split("-")[0])
+        start = jst.localize(datetime(y, 1, 1))
+        stop = jst.localize(datetime(y+1, 1, 1))
+        window = "1mo"
+        labels = [f"{i}月" for i in range(1, 13)]
     
     res_d = {f: [None]*len(labels) for f in ["buy", "sell", "solar", "home"]}
     query = f'from(bucket:"{INFLUX_BUCKET}") |> range(start: {start.isoformat()}, stop: {stop.isoformat()}) |> aggregateWindow(every: {window}, fn: mean, createEmpty: true)'
+    
     try:
         tables = client.query_api().query(query)
         for t in tables:
             fld = t.records[0].get_field()
             if fld in res_d:
                 for i, r in enumerate(t.records):
-                    if i < len(labels) and r.get_value() is not None:
-                        val = r.get_value() / 1000.0
-                        # 月・年単位の場合は平均値から合計値に換算
-                        if u == "month": val *= 24
-                        elif u == "year":
-                            _, m_days = calendar.monthrange(start.year, i+1)
-                            val *= (24 * m_days)
-                        res_d[fld][i] = round(val, 2)
-    except: pass
+                    if i >= len(labels): break
+                    val = r.get_value()
+                    if val is None: continue
+                    
+                    # --- ここで計算ロジックを修正 ---
+                    # 1. 共通: WからkWへ
+                    kw = val / 1000.0
+                    
+                    if u == "day":
+                        # 日次(1h単位): 平均Wがそのままその1時間のkWhとみなせる
+                        res_d[fld][i] = round(kw, 2)
+                        
+                    elif u == "month":
+                        # 月次(1d単位): その日の「平均W × 24h」が1日のkWh
+                        # ただし「今日」の場合は、経過時間分だけ掛ける
+                        target_date = (start + timedelta(days=i)).date()
+                        if target_date == now.date():
+                            hours_passed = now.hour + (now.minute / 60.0)
+                            res_d[fld][i] = round(kw * hours_passed, 2)
+                        elif target_date < now.date():
+                            res_d[fld][i] = round(kw * 24, 2)
+                        else:
+                            res_d[fld][i] = 0.0 # 未来は0
+                            
+                    elif u == "year":
+                        # 年次(1ヶ月単位): その月の「平均W × 24h × 日数」が1ヶ月のkWh
+                        target_month_start = jst.localize(datetime(start.year, i+1, 1))
+                        _, days_in_month = calendar.monthrange(start.year, i+1)
+                        
+                        if target_month_start.year == now.year and target_month_start.month == now.month:
+                            # 今月の場合：月初から今までの総時間数を掛ける
+                            days_passed = now.day - 1 + (now.hour / 24.0)
+                            res_d[fld][i] = round(kw * 24 * days_passed, 2)
+                        elif target_month_start < now.replace(day=1, hour=0, minute=0, second=0, microsecond=0):
+                            res_d[fld][i] = round(kw * 24 * days_in_month, 2)
+                        else:
+                            res_d[fld][i] = 0.0
+    except Exception as e:
+        print(f"Query Error: {e}")
     
     forecast, w_codes, irradiances = [None]*len(labels), ["-"]*len(labels), ["-"]*len(labels)
     # 天気情報の取得（Open-Meteo）

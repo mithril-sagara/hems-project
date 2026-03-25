@@ -92,25 +92,45 @@ def api_live():
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     now = datetime.now(jst)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    query = f'from(bucket:"{INFLUX_BUCKET}") |> range(start: {start.isoformat()}) |> aggregateWindow(every: 1h, fn: mean, createEmpty: true)'
+    
+    # 1時間ごとの平均（W）を取得
+    query = f'from(bucket:"{INFLUX_BUCKET}") |> range(start: {start.isoformat()}) |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)'
+    
     sums = {"buy_k": 0.0, "sell_k": 0.0, "solar_k": 0.0, "buy_y": 0, "sell_y": 0}
+    
     try:
         tables = client.query_api().query(query)
         for t in tables:
             fld = t.records[0].get_field()
-            for i, r in enumerate(t.records):
+            for r in t.records:
                 val = r.get_value()
                 if val is not None:
-                    kwh = val / 1000.0
+                    # 平均WをkWに変換
+                    kw = val / 1000.0
+                    
+                    # そのレコードが「何時間分」のデータか判定（通常1h）
+                    # 進行中の1時間については、経過分数/60を掛けるのが正確
+                    record_time = r.get_time().astimezone(jst)
+                    
+                    if record_time.hour == now.hour and record_time.date() == now.date():
+                        # 現在進行中の1時間：経過した時間（例：30分なら0.5）を掛ける
+                        hours_weight = now.minute / 60.0
+                    else:
+                        # 過去の1時間：丸ごと1時間を掛ける
+                        hours_weight = 1.0
+                    
+                    kwh_segment = kw * hours_weight
+
                     if fld == "buy":
-                        sums["buy_k"] += kwh
-                        sums["buy_y"] += int(kwh * get_unit_price(start + timedelta(hours=i)))
+                        sums["buy_k"] += kwh_segment
+                        sums["buy_y"] += int(kwh_segment * get_unit_price(record_time))
                     elif fld == "sell":
-                        sums["sell_k"] += kwh
-                        sums["sell_y"] += int(kwh * 7.0)
+                        sums["sell_k"] += kwh_segment
+                        sums["sell_y"] += int(kwh_segment * 7.0) # 売電単価
                     elif fld == "solar":
-                        sums["solar_k"] += kwh
-    except: pass
+                        sums["solar_k"] += kwh_segment
+    except Exception as e:
+        print(f"Error in api_live: {e}")
     res = latest_instant.copy()
     res.update({"d_buy_k": round(sums["buy_k"], 2), "d_buy_y": sums["buy_y"], "d_sell_k": round(sums["sell_k"], 2), "d_sell_y": sums["sell_y"], "d_solar_t": round(sums["solar_k"], 2), "ai_ratio": round(get_ai_adjustment(), 3)})
     return jsonify(res)

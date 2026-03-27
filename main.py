@@ -368,7 +368,11 @@ def index():
             mainChart = new Chart(document.getElementById('mainChart').getContext('2d'), {
                 type:'bar', options:{ responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true, grid:{color:'#1e293b'}}, x:{grid:{display:false}}} }
             });
-            document.getElementById('sel-d').value = new Date().toISOString().split('T')[0];
+            const now = new Date();
+            const yyyy = now.getFullYear();
+            const mm = String(now.getMonth() + 1).padStart(2, '0');
+            const dd = String(now.getDate()).padStart(2, '0');
+            document.getElementById('sel-d').value = `${yyyy}-${mm}-${dd}`;
             updateLive(); loadData(); loadWeather(); loadSB();
             setInterval(updateLive, 5000);
         </script>

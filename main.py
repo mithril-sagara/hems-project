@@ -262,120 +262,141 @@ def index():
             </div>
             <div id="sb-wrap"></div>
         </div>
+	<script>
+	    let mainChart; 
+	    const rafs = {};
+	    const W_EMOJI = {0:"☀️ 快晴",1:"🌤️ 晴れ",2:"⛅ 時々曇",3:"☁️ 曇り",45:"🌫️ 霧",48:"🌫️ 霧",51:"🚿 霧雨",53:"🚿 霧雨",55:"🚿 霧雨",61:"☔ 雨",63:"☔ 雨",65:"☔ 強い雨",80:"🌦️ にわか雨",81:"🌦️ にわか雨",82:"🌦️ にわか雨"};
 
-        <script>
-            let mainChart; const rafs = {};
-            const W_EMOJI = {0:"☀️ 快晴",1:"🌤️ 晴れ",2:"⛅ 時々曇",3:"☁️ 曇り",45:"🌫️ 霧",48:"🌫️ 霧",51:"🚿 霧雨",53:"🚿 霧雨",55:"🚿 霧雨",61:"☔ 雨",63:"☔ 雨",65:"☔ 強い雨",80:"🌦️ にわか雨",81:"🌦️ にわか雨",82:"🌦️ にわか雨"};
+	    function toggleFullscreen() {
+	        if (!document.fullscreenElement) { document.documentElement.requestFullscreen(); } 
+	        else { document.exitFullscreen(); }
+	    }
 
-            function toggleFullscreen() {
-                if (!document.fullscreenElement) { document.documentElement.requestFullscreen(); } 
-                else { document.exitFullscreen(); }
-            }
+	    function anim(dotId, pathId, val) {
+	        const dot = document.getElementById(dotId), path = document.getElementById(pathId);
+	        if (val <= 30) { dot.style.opacity = 0; cancelAnimationFrame(rafs[dotId]); return; }
+	        dot.style.opacity = 1; const len = path.getTotalLength(), dur = Math.max(800, 6000 - (val/2));
+	        let start = null; 
+	        function step(ts) { 
+	            if(!start) start = ts; 
+	            const p = path.getPointAtLength(((ts-start)%dur/dur)*len);
+	            dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y); 
+	            rafs[dotId] = requestAnimationFrame(step); 
+	        }
+	        cancelAnimationFrame(rafs[dotId]); rafs[dotId] = requestAnimationFrame(step);
+	    }
 
-            function anim(dotId, pathId, val) {
-                const dot = document.getElementById(dotId), path = document.getElementById(pathId);
-                if (val <= 30) { dot.style.opacity = 0; cancelAnimationFrame(rafs[dotId]); return; }
-                dot.style.opacity = 1; const len = path.getTotalLength(), dur = Math.max(800, 6000 - (val/2));
-                let start = null; 
-                function step(ts) { 
-                    if(!start) start = ts; 
-                    const p = path.getPointAtLength(((ts-start)%dur/dur)*len);
-                    dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y); 
-                    rafs[dotId] = requestAnimationFrame(step); 
-                }
-                cancelAnimationFrame(rafs[dotId]); rafs[dotId] = requestAnimationFrame(step);
-            }
+	    async function updateLive() {
+	        try {
+	            const d = await (await fetch('/api/live')).json();
+	            document.getElementById('clock').innerText = new Date().toLocaleString('ja-JP');
+	            document.getElementById('v-solar').innerText = d.solar;
+	            document.getElementById('v-grid').innerText = d.sell > 0 ? d.sell : d.buy;
+	            document.getElementById('v-home').innerText = d.home;
+	            document.getElementById('v-s-t').innerText = d.d_solar_t;
+	            document.getElementById('v-bk').innerText = d.d_buy_k; document.getElementById('v-by').innerText = d.d_buy_y;
+	            document.getElementById('v-sk').innerText = d.d_sell_k; document.getElementById('v-sy').innerText = d.d_sell_y;
+	            anim('d-s2h', 'p-s2h', Math.min(d.solar, d.home));
+	            anim('d-s2g', 'p-s2g', d.sell); anim('d-g2h', 'p-g2h', d.buy);
+	        } catch(e) { console.error("Live update failed", e); }
+	    }
 
-            async function updateLive() {
-                const d = await (await fetch('/api/live')).json();
-                document.getElementById('clock').innerText = new Date().toLocaleString('ja-JP');
-                document.getElementById('v-solar').innerText = d.solar;
-                document.getElementById('v-grid').innerText = d.sell > 0 ? d.sell : d.buy;
-                document.getElementById('v-home').innerText = d.home;
-                document.getElementById('v-s-t').innerText = d.d_solar_t;
-                document.getElementById('v-bk').innerText = d.d_buy_k; document.getElementById('v-by').innerText = d.d_buy_y;
-                document.getElementById('v-sk').innerText = d.d_sell_k; document.getElementById('v-sy').innerText = d.d_sell_y;
-                anim('d-s2h', 'p-s2h', Math.min(d.solar, d.home));
-                anim('d-s2g', 'p-s2g', d.sell); anim('d-g2h', 'p-g2h', d.buy);
-            }
+	    async function loadData() {
+	        const u = document.getElementById('sel-u').value, d = document.getElementById('sel-d').value;
+	        try {
+	            const res = await (await fetch(`/api/history?unit=${u}&date=${d}`)).json();
+	            
+	            // グラフデータの更新
+	            mainChart.data.labels = res.labels;
+	            mainChart.data.datasets = [
+	                {label:'買電', type:'bar', backgroundColor:'#f97316', data:res.buy, order:2},
+	                {label:'売電', type:'bar', backgroundColor:'#22c55e', data:res.sell, order:2},
+	                {label:'発電', type:'line', borderColor:'#3b82f6', data:res.solar, pointRadius:4, pointBackgroundColor:'#3b82f6', tension:0.3, order:1},
+	                {label:'家消費', type:'line', borderColor:'#a855f7', data:res.home, pointRadius:4, pointBackgroundColor:'#a855f7', tension:0.3, order:1}
+	            ];
+	            if(u==='day') mainChart.data.datasets.push({label:'予測', type:'line', borderColor:'#94a3b8', borderDash:[5,5], data:res.forecast, pointRadius:0, order:3});
+	            
+	            // 'none' を指定してアニメーションなしで更新（ちらつき防止）
+	            mainChart.update('none');
 
-            async function loadData() {
-                const u = document.getElementById('sel-u').value, d = document.getElementById('sel-d').value;
-                const res = await (await fetch(`/api/history?unit=${u}&date=${d}`)).json();
-                mainChart.data.labels = res.labels;
-                mainChart.data.datasets = [
-                    {label:'買電', type:'bar', backgroundColor:'#f97316', data:res.buy, order:2},
-                    {label:'売電', type:'bar', backgroundColor:'#22c55e', data:res.sell, order:2},
-                    {label:'発電', type:'line', borderColor:'#3b82f6', data:res.solar, pointRadius:4, pointBackgroundColor:'#3b82f6', tension:0.3, order:1},
-                    {label:'家消費', type:'line', borderColor:'#a855f7', data:res.home, pointRadius:4, pointBackgroundColor:'#a855f7', tension:0.3, order:1}
-                ];
-                if(u==='day') mainChart.data.datasets.push({label:'予測', type:'line', borderColor:'#94a3b8', borderDash:[5,5], data:res.forecast, pointRadius:0, order:3});
-                mainChart.update();
-                const f = (v) => (v === null || v === undefined) ? '-' : v;
-                document.getElementById('list-body').innerHTML = res.labels.map((l, i) => `<tr><td>${l}</td><td>${f(res.buy[i])}</td><td>${f(res.sell[i])}</td><td>${f(res.solar[i])}</td><td>${f(res.home[i])}</td><td>${f(res.buy_yen[i])}</td><td>${f(res.sell_yen[i])}</td><td>${f(res.weather[i])}</td><td>${f(res.radiation[i])}</td></tr>`).join('');
-            }
+	            // リストの更新
+	            const f = (v) => (v === null || v === undefined) ? '-' : v;
+	            document.getElementById('list-body').innerHTML = res.labels.map((l, i) => 
+	                `<tr><td>${l}</td><td>${f(res.buy[i])}</td><td>${f(res.sell[i])}</td><td>${f(res.solar[i])}</td><td>${f(res.home[i])}</td><td>${f(res.buy_yen[i])}</td><td>${f(res.sell_yen[i])}</td><td>${f(res.weather[i])}</td><td>${f(res.radiation[i])}</td></tr>`
+	            ).join('');
+	        } catch(e) { console.error("Data load failed", e); }
+	    }
 
-            function setView(v) {
-                document.getElementById('wrap-chart').style.display = v==='chart'?'block':'none';
-                document.getElementById('wrap-list').style.display = v==='list'?'block':'none';
-                document.getElementById('b-chart').classList.toggle('active', v==='chart');
-                document.getElementById('b-list').classList.toggle('active', v==='list');
-            }
+	    function setView(v) {
+	        document.getElementById('wrap-chart').style.display = v==='chart'?'block':'none';
+	        document.getElementById('wrap-list').style.display = v==='list'?'block':'none';
+	        document.getElementById('b-chart').classList.toggle('active', v==='chart');
+	        document.getElementById('b-list').classList.toggle('active', v==='list');
+	    }
 
-            async function loadWeather() {
-                const res = await (await fetch("https://api.open-meteo.com/v1/forecast?latitude=33.45&longitude=130.53&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=Asia%2FTokyo")).json();
-                document.getElementById('w-max').innerText = Math.round(res.daily.temperature_2m_max[0]);
-                document.getElementById('w-min').innerText = Math.round(res.daily.temperature_2m_min[0]);
-                document.getElementById('w-txt').innerText = `${W_EMOJI[res.daily.weather_code[0]] || "不明"} (降水:${res.daily.precipitation_sum[0]}mm)`;
-                document.getElementById('w-weekly').innerHTML = res.daily.time.slice(0,7).map((t, i) => `<div>${t.slice(8,10)}日<br>${W_EMOJI[res.daily.weather_code[i]]?.split(' ')[0] || "☁️"}<br>${Math.round(res.daily.temperature_2m_max[i])}°</div>`).join('');
-            }
+	    async function loadWeather() {
+	        try {
+	            const res = await (await fetch("https://api.open-meteo.com/v1/forecast?latitude=33.45&longitude=130.53&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=Asia%2FTokyo")).json();
+	            document.getElementById('w-max').innerText = Math.round(res.daily.temperature_2m_max[0]);
+	            document.getElementById('w-min').innerText = Math.round(res.daily.temperature_2m_min[0]);
+	            document.getElementById('w-txt').innerText = `${W_EMOJI[res.daily.weather_code[0]] || "不明"} (降水:${res.daily.precipitation_sum[0]}mm)`;
+	            document.getElementById('w-weekly').innerHTML = res.daily.time.slice(0,7).map((t, i) => `<div>${t.slice(8,10)}日<br>${W_EMOJI[res.daily.weather_code[i]]?.split(' ')[0] || "☁️"}<br>${Math.round(res.daily.temperature_2m_max[i])}°</div>`).join('');
+	        } catch(e) {}
+	    }
 
-            async function loadSB() {
-                const d = await (await fetch('/api/devices')).json();
-                const wrap = document.getElementById('sb-wrap'); wrap.innerHTML = '';
-                (d.deviceList || []).concat(d.infraredRemoteList || []).forEach(v => {
-                    const isAC = v.deviceType === "Air Conditioner";
-                    const card = document.createElement('div'); card.className = "sb-card";
-                    card.innerHTML = `
-                        <div class="sb-name">${v.deviceName || v.remoteName}</div>
-                        <div class="sb-ctrl">
-                            ${isAC ? `
-                                <select class="ac-select" id="mode-${v.deviceId}" onchange="ctrlAC('${v.deviceId}', document.getElementById('sw-${v.deviceId}').checked ? 'on':'off', true)">
-                                    <option value="2">冷</option><option value="3">除</option><option value="5">暖</option>
-                                </select>
-                                <input type="number" class="ac-temp" id="temp-${v.deviceId}" value="26" min="18" max="30" onchange="ctrlAC('${v.deviceId}', document.getElementById('sw-${v.deviceId}').checked ? 'on':'off', true)">
-                            ` : ''}
-                            <label class="switch">
-                                <input type="checkbox" id="sw-${v.deviceId}" onchange="ctrlAC('${v.deviceId}', this.checked ? 'on':'off', ${isAC})">
-                                <span class="slider"></span>
-                            </label>
-                        </div>`;
-                    wrap.appendChild(card);
-                });
-            }
+	    async function loadSB() {
+	        try {
+	            const d = await (await fetch('/api/devices')).json();
+	            const wrap = document.getElementById('sb-wrap'); wrap.innerHTML = '';
+	            (d.deviceList || []).concat(d.infraredRemoteList || []).forEach(v => {
+	                const isAC = v.deviceType === "Air Conditioner";
+	                const card = document.createElement('div'); card.className = "sb-card";
+	                card.innerHTML = `
+	                    <div class="sb-name">${v.deviceName || v.remoteName}</div>
+	                    <div class="sb-ctrl">
+	                        ${isAC ? `
+	                            <select class="ac-select" id="mode-${v.deviceId}" onchange="ctrlAC('${v.deviceId}', document.getElementById('sw-${v.deviceId}').checked ? 'on':'off', true)">
+	                                <option value="2">冷</option><option value="3">除</option><option value="5">暖</option>
+	                            </select>
+	                            <input type="number" class="ac-temp" id="temp-${v.deviceId}" value="26" min="18" max="30" onchange="ctrlAC('${v.deviceId}', document.getElementById('sw-${v.deviceId}').checked ? 'on':'off', true)">
+	                        ` : ''}
+	                        <label class="switch">
+	                            <input type="checkbox" id="sw-${v.deviceId}" onchange="ctrlAC('${v.deviceId}', this.checked ? 'on':'off', ${isAC})">
+	                            <span class="slider"></span>
+	                        </label>
+	                    </div>`;
+	                wrap.appendChild(card);
+	            });
+	        } catch(e) {}
+	    }
 
-            function ctrlAC(id, action, isAC) {
-                if (!isAC) {
-                    const cmd = action === 'off' ? 'turnOff' : 'turnOn';
-                    fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deviceId:id, payload:{command:cmd, parameter:'default', commandType:'command'}})});
-                } else {
-                    const temp = document.getElementById(`temp-${id}`).value;
-                    const mode = document.getElementById(`mode-${id}`).value;
-                    fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deviceId:id, payload:{command:'setAll', parameter:`${temp},${mode},1,${action}`, commandType:'command'}})});
-                }
-            }
+	    function ctrlAC(id, action, isAC) {
+	        if (!isAC) {
+	            const cmd = action === 'off' ? 'turnOff' : 'turnOn';
+	            fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deviceId:id, payload:{command:cmd, parameter:'default', commandType:'command'}})});
+	        } else {
+	            const temp = document.getElementById(`temp-${id}`).value;
+	            const mode = document.getElementById(`mode-${id}`).value;
+	            fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deviceId:id, payload:{command:'setAll', parameter:`${temp},${mode},1,${action}`, commandType:'command'}})});
+	        }
+	    }
 
-            mainChart = new Chart(document.getElementById('mainChart').getContext('2d'), {
-                type:'bar', options:{ responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true, grid:{color:'#1e293b'}}, x:{grid:{display:false}}} }
-            });
-            const now = new Date();
-            const yyyy = now.getFullYear();
-            const mm = String(now.getMonth() + 1).padStart(2, '0');
-            const dd = String(now.getDate()).padStart(2, '0');
-            document.getElementById('sel-d').value = `${yyyy}-${mm}-${dd}`;
-            updateLive(); loadData(); loadWeather(); loadSB();
-            setInterval(updateLive, 5000);
-        </script>
+	    // 初期化
+	    mainChart = new Chart(document.getElementById('mainChart').getContext('2d'), {
+	        type:'bar', options:{ animation: false, responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true, grid:{color:'#1e293b'}}, x:{grid:{display:false}}} }
+	    });
+
+	    const now = new Date();
+	    document.getElementById('sel-d').value = now.toLocaleDateString('sv-SE'); // YYYY-MM-DD 形式
+
+	    // 実行
+	    updateLive(); loadData(); loadWeather(); loadSB();
+
+	    // タイマー設定
+	    setInterval(updateLive, 5000);   // 5秒ごとに電力アニメーション更新
+	    setInterval(loadData, 60000);    // 1分ごとにグラフとリストを自動更新
+	    setInterval(loadWeather, 3600000); // 1時間ごとに天気更新
+	</script>
     </body></html>
     """)
 

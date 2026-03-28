@@ -17,10 +17,7 @@ SB_SECRET = os.environ.get("SB_SECRET")
 jst = pytz.timezone('Asia/Tokyo')
 
 W_MAP = {
-    0: "☀️ 快晴", 1: "🌤️ 晴れ", 2: "⛅ 時々曇", 3: "☁️ 曇り",
-    45: "🌫️ 霧", 48: "🌫️ 霧", 51: "🚿 霧雨", 53: "🚿 霧雨", 55: "🚿 霧雨",
-    61: "☔ 小雨", 63: "☔ 雨", 65: "☔ 強い雨",
-    80: "🌦️ にわか雨", 81: "🌦️ にわか雨", 82: "🌦️ にわか雨"
+  0: "☀️ 快晴",  1: "🌤️ 晴れ",  2: "⛅ 時々曇",  3: "☁️ 曇り",  45: "🌫️ 霧",  48: "🌫️ 霧",  51: "🚿 霧雨",  53: "🚿 霧雨",  55: "🚿 霧雨",  61: "☔ 雨",  63: "☔ 雨",  65: "☔ 強い雨",  66: "🧊 着氷性の雨", 67: "🧊 強い氷雨",  71: "❄️ 軽めの雪", 73: "❄️ 雪",  75: "❄️ 強い雪",  77: "❄️ 霧雪",  80: "🌦️ にわか雨",  81: "🌦️ にわか雨",  82: "🌦️ 激しいにわか雨",  85: "☃️ 雪（にわか）",  86: "☃️ 激しい雪（にわか）",  95: "⚡ 雷雨",  96: "⛈️ 雷雨（ひょう）",  99: "⛈️ 激しい雷雨（ひょう）"
 }
 
 COEFF_MAP = {1: 1.72, 2: 1.72, 3: 1.62, 4: 1.56, 5: 1.50, 6: 1.40, 7: 1.30, 8: 1.30, 9: 1.40, 10: 1.56, 11: 1.65, 12: 1.72}
@@ -33,14 +30,31 @@ def get_unit_price(dt):
 
 def fetch_echonet(eoj, epc):
     try:
+        # トランザクションID(TID)を固定せず、毎回変えるのが理想ですが、
+        # 簡易的に [0x00, 0x01] としています。
         frame = bytes([0x10, 0x81, 0x00, 0x01, 0x05, 0xff, 0x01, eoj[0], eoj[1], eoj[2], 0x62, 0x01, epc, 0x00])
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.bind(("", 3610))
             s.settimeout(0.8)
+            
+            # 【根本対策1】送信前にバッファに溜まっているゴミ（古いパケット）を掃除
+            s.setblocking(False)
+            try:
+                while True: s.recvfrom(1024)
+            except: pass
+            s.setblocking(True)
+
             s.sendto(frame, (IP, 3610))
+            
+            # 【根本対策2】パケットサイズとEPCのチェック
             data, _ = s.recvfrom(1024)
+            if len(data) < 14: return None  # ECHONET Liteの最小サイズ未満なら無視
+            
             idx = data.find(bytes([epc]))
-            return data[idx+2 : idx+2+data[idx+1]]
+            if idx == -1: return None
+            
+            length = data[idx+1]
+            return data[idx+2 : idx+2+length]
     except: return None
 
 latest_instant = {"solar": 0, "buy": 0, "sell": 0, "home": 0}
@@ -48,21 +62,55 @@ latest_instant = {"solar": 0, "buy": 0, "sell": 0, "home": 0}
 def collector():
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     write_api = client.write_api(write_options=SYNCHRONOUS)
+    
+    # 前回の値を保持する変数（異常値の際の補完用）
+    last_valid = {"solar": 0, "buy": 0, "sell": 0}
+    MAX_WATT = PANEL_CAPACITY * 1500  # 1.5倍以上の発電は物理的に異常とみなす(約9000W)
+
     while True:
         try:
             res_s = fetch_echonet([0x02, 0x79, 0x01], 0xE0)
             res_m = fetch_echonet([0x02, 0xA5, 0x01], 0xF5)
-            solar = int.from_bytes(res_s, "big", signed=True) if res_s else 0
+            
+            # 発電量の処理
+            if res_s:
+                val_s = int.from_bytes(res_s, "big", signed=True)
+                # 【根本対策3】100倍などの異常値（MAX_WATT超え）やマイナスは無視
+                if 0 <= val_s < MAX_WATT:
+                    solar = val_s
+                    last_valid["solar"] = solar
+                else:
+                    solar = last_valid["solar"]
+            else:
+                solar = last_valid["solar"] # 通信エラー時は前回の値
+
+            # 買電・売電の処理
             buy, sell = 0, 0
             if res_m and len(res_m) >= 4:
-                val = int.from_bytes(res_m[0:4], "big", signed=True)
-                if val >= 0: sell = val; buy = 0
-                else: sell = 0; buy = abs(val)
+                val_m = int.from_bytes(res_m[0:4], "big", signed=True)
+                # 明らかに異常な値（例: 50kW以上など）でなければ採用
+                if -50000 < val_m < 50000:
+                    if val_m >= 0: 
+                        sell = val_m; buy = 0
+                    else: 
+                        sell = 0; buy = abs(val_m)
+                    last_valid["buy"] = buy
+                    last_valid["sell"] = sell
+                else:
+                    buy, sell = last_valid["buy"], last_valid["sell"]
+            else:
+                buy, sell = last_valid["buy"], last_valid["sell"]
+
             home = max(0, solar + buy - sell)
+            
+            # データ更新と書き込み
             latest_instant.update({"solar": solar, "buy": buy, "sell": sell, "home": home})
             p = Point("energy").field("solar", float(solar)).field("buy", float(buy)).field("sell", float(sell)).field("home", float(home))
             write_api.write(bucket=INFLUX_BUCKET, record=p)
-        except: pass
+            
+        except Exception as e:
+            print(f"Collector Error: {e}")
+        
         time.sleep(5)
 
 app = Flask(__name__)
@@ -95,9 +143,14 @@ def api_live():
     res.update({"d_buy_k": round(sums["buy_k"], 2), "d_buy_y": sums["buy_y"], "d_sell_k": round(sums["sell_k"], 2), "d_sell_y": sums["sell_y"], "d_solar_t": round(sums["solar_k"], 2)})
     return jsonify(res)
 
+
 @app.route("/api/history")
 def api_history():
-    u, d_str = request.args.get("unit", "day"), request.args.get("date", datetime.now(jst).strftime("%Y-%m-%d"))
+    # 引数がない場合は、その時点の「現在」を取得するように明示
+    u = request.args.get("unit", "day")
+    d_str = request.args.get("date")
+    if not d_str:
+        d_str = datetime.now(jst).strftime("%Y-%m-%d")
     client = InfluxDBClient(url=INFLUX_URL, token=INFLUX_TOKEN, org=INFLUX_ORG)
     if u == "day":
         start = jst.localize(datetime.strptime(d_str, "%Y-%m-%d")); stop = start + timedelta(days=1); window = "1h"
@@ -178,7 +231,7 @@ def index():
         .area-data { flex-grow: 1; display: flex; flex-direction: column; min-height: 0; }
         .data-content { flex-grow: 1; position: relative; overflow: hidden; background: #0f172a; }
         .weather-card { height: 110px; padding: 15px; margin: 10px; border-radius: 12px; background: linear-gradient(135deg, #1e40af, #1e293b); border: 1px solid #3b82f6; }
-        .radar-box { height: 400px; margin: 0px 10px 0px 10px; border-radius: 12px; overflow: hidden; border: 1px solid #334155; }
+        .radar-box { height: 700px; margin: 0px 10px 0px 10px; border-radius: 12px; overflow: hidden; border: 1px solid #334155; }
         #sb-wrap { flex-grow: 1; overflow-y: auto; padding: 10px; }
         #clock { position: absolute; top: 10px; left: 15px; color: var(--solar); font-weight: bold; font-family: monospace; cursor: pointer; z-index: 100; }
         .node { position: absolute; width: 80px; height: 80px; border-radius: 50%; border: 3px solid #475569; background: #0f172a; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; font-size: 11px; }
@@ -225,7 +278,9 @@ def index():
                 </svg>
                 <div class="node solar"><small>発電</small><b id="v-solar" style="font-size:18px;">0</b>W</div>
                 <div class="solar-total">本日計: <span id="v-s-t" style="color:var(--solar)">0.0</span>kWh</div>
-                <div class="node grid"><small>電力網</small><b id="v-grid" style="font-size:18px;">0</b>W</div>
+		<div class="node grid" style="border-width: 4px; transition: border-color 0.5s;">
+		    <small>電力網</small><b id="v-grid" style="font-size:18px;">0</b>W
+		</div>
                 <div class="node home"><small>家消費</small><b id="v-home" style="font-size:18px;">0</b>W</div>
                 <div class="acc-info">
                     <div style="font-size:15px;">買電: <span id="v-bk" style="color:var(--buy)">0</span>kWh (<span id="v-by">0</span>円)</div>
@@ -252,10 +307,10 @@ def index():
         <div id="right">
             <div class="weather-card" id="w-card">
                 <div style="display:flex; justify-content:space-between;">
-                    <div><b style="font-size:18px;">筑紫野市 筑紫</b><div id="w-txt" style="font-size:13px; margin-top:5px;"></div></div>
+                    <div><div id="w-txt" style="font-size:18px; margin-top:5px;"></div></div>
                     <div style="text-align:right"><span id="w-max" style="font-size:30px; font-weight:bold; color:#f87171;">--</span>° / <span id="w-min" style="font-size:20px; opacity:0.8;">--</span>°</div>
                 </div>
-                <div id="w-weekly" style="display:flex; justify-content:space-between; margin-top:15px; font-size:11px; text-align:center;"></div>
+                <div id="w-weekly" style="display:flex; justify-content:space-between; margin-top:15px; font-size:15px; text-align:center;"></div>
             </div>
             <div class="radar-box">
                 <iframe src="https://webapp.ydits.net/" width="100%" height="100%" scrolling="NO" frameborder="0"></iframe>
@@ -265,7 +320,9 @@ def index():
 	<script>
 	    let mainChart; 
 	    const rafs = {};
-	    const W_EMOJI = {0:"☀️ 快晴",1:"🌤️ 晴れ",2:"⛅ 時々曇",3:"☁️ 曇り",45:"🌫️ 霧",48:"🌫️ 霧",51:"🚿 霧雨",53:"🚿 霧雨",55:"🚿 霧雨",61:"☔ 雨",63:"☔ 雨",65:"☔ 強い雨",80:"🌦️ にわか雨",81:"🌦️ にわか雨",82:"🌦️ にわか雨"};
+	    const W_EMOJI = {
+                 0: "☀️ 快晴",  1: "🌤️ 晴れ",  2: "⛅ 時々曇",  3: "☁️ 曇り",  45: "🌫️ 霧",  48: "🌫️ 霧",  51: "🚿 霧雨",  53: "🚿 霧雨",  55: "🚿 霧雨",  61: "☔ 雨",  63: "☔ 雨",  65: "☔ 強い雨",  66: "🧊 着氷性の雨", 67: "🧊 強い氷雨",  71: "❄️ 軽めの雪", 73: "❄️ 雪",  75: "❄️ 強い雪",  77: "❄️ 霧雪",  80: "🌦️ にわか雨",  81: "🌦️ にわか雨",  82: "🌦️ 激しいにわか雨",  85: "☃️ 雪（にわか）",  86: "☃️ 激しい雪（にわか）",  95: "⚡ 雷雨",  96: "⛈️ 雷雨（ひょう）",  99: "⛈️ 激しい雷雨（ひょう）"
+            };
 
 	    function toggleFullscreen() {
 	        if (!document.fullscreenElement) { document.documentElement.requestFullscreen(); } 
@@ -286,20 +343,68 @@ def index():
 	        cancelAnimationFrame(rafs[dotId]); rafs[dotId] = requestAnimationFrame(step);
 	    }
 
-	    async function updateLive() {
-	        try {
-	            const d = await (await fetch('/api/live')).json();
-	            document.getElementById('clock').innerText = new Date().toLocaleString('ja-JP');
-	            document.getElementById('v-solar').innerText = d.solar;
-	            document.getElementById('v-grid').innerText = d.sell > 0 ? d.sell : d.buy;
-	            document.getElementById('v-home').innerText = d.home;
-	            document.getElementById('v-s-t').innerText = d.d_solar_t;
-	            document.getElementById('v-bk').innerText = d.d_buy_k; document.getElementById('v-by').innerText = d.d_buy_y;
-	            document.getElementById('v-sk').innerText = d.d_sell_k; document.getElementById('v-sy').innerText = d.d_sell_y;
-	            anim('d-s2h', 'p-s2h', Math.min(d.solar, d.home));
-	            anim('d-s2g', 'p-s2g', d.sell); anim('d-g2h', 'p-g2h', d.buy);
-	        } catch(e) { console.error("Live update failed", e); }
+	let currentLoadedDate = new Date().toLocaleDateString('sv-SE');
+
+	async function updateLive() {
+	    try {
+	        const now = new Date();
+	        const todayStr = now.toLocaleDateString('sv-SE');
+
+	        // 【日付跨ぎ対応】
+	        // 現在の時刻と、画面が保持している日付(currentLoadedDate)を比較
+	        if (todayStr !== currentLoadedDate) {
+	            console.log("日付が変わりました。表示を更新します。");
+	            currentLoadedDate = todayStr;
+	            
+	            // 日付選択フォーム(input type="date")の値を今日に更新
+	            const dateInput = document.getElementById('sel-d');
+	            if (dateInput) {
+	                dateInput.value = todayStr;
+	            }
+	            
+	            // グラフ・リスト・天気を新しい日付で再読込
+	            loadData();
+	            loadWeather();
+	        }
+
+	        // ライブデータの取得
+	        const response = await fetch('/api/live');
+	        const d = await response.json();
+
+	        // 時計の更新
+	        document.getElementById('clock').innerText = now.toLocaleString('ja-JP');
+	        
+	        // 各種数値の更新
+	        document.getElementById('v-solar').innerText = d.solar;
+	        document.getElementById('v-home').innerText = d.home;
+	        document.getElementById('v-s-t').innerText = d.d_solar_t;
+	        document.getElementById('v-bk').innerText = d.d_buy_k; 
+	        document.getElementById('v-by').innerText = d.d_buy_y;
+	        document.getElementById('v-sk').innerText = d.d_sell_k; 
+	        document.getElementById('v-sy').innerText = d.d_sell_y;
+
+	        // 電力網ノードの色と数値の切り替え
+	        const gridNode = document.querySelector('.node.grid');
+	        const gridValEl = document.getElementById('v-grid');
+	        if (d.sell > 0) {
+	            // 売電中：緑色
+	            gridValEl.innerText = d.sell;
+	            gridNode.style.borderColor = "var(--sell)";
+	        } else {
+	            // 買電中：オレンジ
+	            gridValEl.innerText = d.buy;
+	            gridNode.style.borderColor = "var(--buy)";
+	        }
+
+	        // アニメーションの更新
+	        anim('d-s2h', 'p-s2h', Math.min(d.solar, d.home));
+	        anim('d-s2g', 'p-s2g', d.sell); 
+	        anim('d-g2h', 'p-g2h', d.buy);
+
+	    } catch(e) { 
+	        console.error("Live update failed", e); 
 	    }
+	}
 
 	    async function loadData() {
 	        const u = document.getElementById('sel-u').value, d = document.getElementById('sel-d').value;

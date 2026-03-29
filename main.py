@@ -198,34 +198,31 @@ def index():
         td { padding: 6px; border-bottom: 1px solid #1e293b; text-align: center; }
         .btn { padding: 6px 10px; border: 1px solid #475569; border-radius: 4px; cursor: pointer; background: #1e293b; color: #fff; }
         .btn.active { background: var(--solar); }
-        
-        /* SwitchBot ボタン強調デザイン */
         .sb-card { background: var(--card); padding: 8px 12px; border-radius: 10px; margin-bottom: 6px; border: 1px solid #334155; display: flex; align-items: center; justify-content: space-between; }
         .sb-name { font-size: 13px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
         .sb-ctrl { display: flex; align-items: center; gap: 4px; }
         .ac-select { background: #0f172a; color: #fff; border: 1px solid #475569; border-radius: 4px; font-size: 11px; padding: 2px; }
         .ac-temp { width: 35px; background: #0f172a; color: #fff; border: 1px solid #475569; border-radius: 4px; font-size: 11px; text-align: center; }
-        
         .btn-off { padding: 4px 10px; border-radius: 4px; cursor: pointer; background: #334155; color: #888; border: 1px solid #475569; font-size: 11px; }
         .btn-off.active { background: #f87171; color: #fff; border-color: #f87171; font-weight: bold; }
-        
         .btn-on { padding: 4px 10px; border-radius: 4px; cursor: pointer; background: #334155; color: #888; border: 1px solid #475569; font-size: 11px; }
         .btn-on.active { background: #22c55e; color: #fff; border-color: #22c55e; font-weight: bold; }
         
-        svg { position: absolute; width: 100%; height: 100%; pointer-events: none; }
+        /* 修正：viewBoxを外すため、SVGが領域いっぱいに広がるように設定 */
+        svg { position: absolute; width: 100%; height: 100%; top: 0; left: 0; pointer-events: none; }
     </style>
     </head>
     <body>
         <div id="left">
             <div class="area-live">
                 <div id="clock" onclick="toggleFullscreen()"></div>
-                <svg viewBox="0 0 500 300">
-                    <path id="p-s2h" d="M 250 100 V 170 H 420" stroke="#1e293b" stroke-width="6" fill="none" />
-                    <path id="p-s2g" d="M 250 100 V 170 H 80" stroke="#1e293b" stroke-width="6" fill="none" />
-                    <path id="p-g2h" d="M 80 170 H 420" stroke="#1e293b" stroke-width="6" fill="none" />
-                    <circle id="d-s2h" r="4" fill="#fbbf24" style="opacity:0;" />
-                    <circle id="d-s2g" r="4" fill="#fbbf24" style="opacity:0;" />
-                    <circle id="d-g2h" r="4" fill="#f97316" style="opacity:0;" />
+                <svg>
+                    <path id="p-s2h" stroke="#1e293b" stroke-width="6" fill="none" />
+                    <path id="p-s2g" stroke="#1e293b" stroke-width="6" fill="none" />
+                    <path id="p-g2h" stroke="#1e293b" stroke-width="6" fill="none" />
+                    <circle id="d-s2h" r="4" fill="var(--solar)" style="opacity:0;" />
+                    <circle id="d-s2g" r="4" fill="var(--solar)" style="opacity:0;" />
+                    <circle id="d-g2h" r="4" fill="var(--buy)" style="opacity:0;" />
                 </svg>
                 <div class="node solar"><small>発電</small><b id="v-solar" style="font-size:18px;">0</b>W</div>
                 <div class="solar-total">本日計: <span id="v-s-t" style="color:var(--solar)">0.0</span>kWh</div>
@@ -270,13 +267,42 @@ def index():
         let currentLoadedDate = new Date().toLocaleDateString('sv-SE');
 
         function toggleFullscreen() { if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); }
-
-        function anim(dotId, pathId, val) {
+function anim(dotId, pathId, val, color) {
             const dot = document.getElementById(dotId), path = document.getElementById(pathId);
-            if (val <= 30) { dot.style.opacity = 0; cancelAnimationFrame(rafs[dotId]); return; }
-            dot.style.opacity = 1; const len = path.getTotalLength(), dur = Math.max(800, 6000 - (val/2));
-            let start = null; function step(ts) { if(!start) start = ts; const p = path.getPointAtLength(((ts-start)%dur/dur)*len); dot.setAttribute('cx', p.x); dot.setAttribute('cy', p.y); rafs[dotId] = requestAnimationFrame(step); }
-            cancelAnimationFrame(rafs[dotId]); rafs[dotId] = requestAnimationFrame(step);
+            if (!path || val <= 10) { 
+                dot.style.opacity = 0; 
+                cancelAnimationFrame(rafs[dotId]);
+                delete rafs[dotId + "_start"]; // 状態をクリア
+                return; 
+            }
+            
+            dot.style.opacity = 1; 
+            dot.setAttribute('fill', color);
+            
+            const len = path.getTotalLength();
+            // 発電量に応じた「速度」を一定にする計算式
+            let dur = (len * 4000) / (val + 1); 
+            dur = Math.min(8000, Math.max(500, dur));
+
+            // すでに動いている場合は開始時間を引き継ぐ（ここがポイント）
+            if (!rafs[dotId + "_start"]) {
+                rafs[dotId + "_start"] = performance.now();
+            }
+
+            function step(ts) { 
+                const startTime = rafs[dotId + "_start"];
+                // 5秒ごとのデータ更新でdurが変わっても、経過時間から今の位置を再計算する
+                const progress = ((ts - startTime) % dur) / dur;
+                
+                const p = path.getPointAtLength(progress * len); 
+                dot.setAttribute('cx', p.x); 
+                dot.setAttribute('cy', p.y); 
+                rafs[dotId] = requestAnimationFrame(step); 
+            }
+
+            // 二重実行防止
+            cancelAnimationFrame(rafs[dotId]); 
+            rafs[dotId] = requestAnimationFrame(step);
         }
 
         async function updateLive() {
@@ -296,11 +322,32 @@ def index():
                 const gridNode = document.querySelector('.node.grid'), gVal = document.getElementById('v-grid');
                 if (d.sell > 0) { gVal.innerText = d.sell; gridNode.style.borderColor = "var(--sell)"; }
                 else { gVal.innerText = d.buy; gridNode.style.borderColor = "var(--buy)"; }
-                anim('d-s2h', 'p-s2h', Math.min(d.solar, d.home)); anim('d-s2g', 'p-s2g', d.sell); anim('d-g2h', 'p-g2h', d.buy);
+
+                // --- 修正：解像度追従のためのパス更新ロジック ---
+                const solar = document.querySelector('.node.solar').getBoundingClientRect();
+                const grid = document.querySelector('.node.grid').getBoundingClientRect();
+                const home = document.querySelector('.node.home').getBoundingClientRect();
+                const area = document.querySelector('.area-live').getBoundingClientRect();
+
+                const sx = (solar.left + solar.width/2) - area.left;
+                const sy = (solar.top + solar.height/2) - area.top;
+                const gx = (grid.left + grid.width/2) - area.left;
+                const hx = (home.left + home.width/2) - area.left;
+                const ty = 170; // 分岐点の高さ
+
+                document.getElementById('p-s2h').setAttribute('d', `M ${sx} ${sy} V ${ty} H ${hx}`);
+                document.getElementById('p-s2g').setAttribute('d', `M ${sx} ${sy} V ${ty} H ${gx}`);
+                document.getElementById('p-g2h').setAttribute('d', `M ${gx} ${ty} H ${hx}`);
+                // ---------------------------------------------
+
+                // 修正：色を指定（発電由来：青、買電由来：オレンジ）
+                anim('d-s2h', 'p-s2h', Math.min(d.solar, d.home), '#3b82f6'); // 発電→家
+                anim('d-s2g', 'p-s2g', d.sell, '#3b82f6');                   // 発電→網
+                anim('d-g2h', 'p-g2h', d.buy, '#f97316');                    // 買電→家
             } catch(e) {}
         }
 
-        async function loadData() {
+async function loadData() {
             const u = document.getElementById('sel-u').value, d = document.getElementById('sel-d').value;
             try {
                 const res = await (await fetch(`/api/history?unit=${u}&date=${d}`)).json();
@@ -313,8 +360,37 @@ def index():
                 ];
                 if(u==='day') mainChart.data.datasets.push({label:'予測', type:'line', borderColor:'#94a3b8', borderDash:[5,5], data:res.forecast, pointRadius:0, order:3});
                 mainChart.update('none');
+                
                 const f = (v) => v ?? '-';
-                document.getElementById('list-body').innerHTML = res.labels.map((l, i) => `<tr><td>${l}</td><td>${f(res.buy[i])}</td><td>${f(res.sell[i])}</td><td>${f(res.solar[i])}</td><td>${f(res.home[i])}</td><td>${f(res.buy_yen[i])}</td><td>${f(res.sell_yen[i])}</td><td>${f(res.weather[i])}</td><td>${f(res.radiation[i])}</td></tr>`).join('');
+
+                // --- 項目名（ヘッダー）の更新処理を追加 ---
+                const unitLabel = u === 'day' ? '時間' : (u === 'month' ? '日付' : '月');
+                document.getElementById('table-head').innerHTML = `
+                    <tr>
+                        <th>${unitLabel}</th>
+                        <th>買電(kWh)</th>
+                        <th>売電(kWh)</th>
+                        <th>発電(kWh)</th>
+                        <th>消費(kWh)</th>
+                        <th>買電(円)</th>
+                        <th>売電(円)</th>
+                        <th>天気</th>
+                        <th>日射量</th>
+                    </tr>`;
+                
+                // リスト本体の更新
+                document.getElementById('list-body').innerHTML = res.labels.map((l, i) => 
+                    `<tr>
+                        <td>${l}</td>
+                        <td>${f(res.buy[i])}</td>
+                        <td>${f(res.sell[i])}</td>
+                        <td>${f(res.solar[i])}</td>
+                        <td>${f(res.home[i])}</td>
+                        <td>${f(res.buy_yen[i])}</td>
+                        <td>${f(res.sell_yen[i])}</td>
+                        <td>${f(res.weather[i])}</td>
+                        <td>${f(res.radiation[i])}</td>
+                    </tr>`).join('');
             } catch(e) {}
         }
 
@@ -341,7 +417,7 @@ def index():
                 const wrap = document.getElementById('sb-wrap'); wrap.innerHTML = '';
                 (d.deviceList || []).concat(d.infraredRemoteList || []).forEach(v => {
                     const isAC = v.deviceType === "Air Conditioner";
-                    const powerStatus = v.power === 'on'; // デバイスの電源状態
+                    const powerStatus = v.power === 'on';
                     const card = document.createElement('div'); card.className = "sb-card";
                     card.innerHTML = `<div class="sb-name">${v.deviceName || v.remoteName}</div><div class="sb-ctrl">
                         ${isAC ? `<select class="ac-select" id="mode-${v.deviceId}"><option value="2">冷</option><option value="3">除</option><option value="5">暖</option></select>
@@ -357,21 +433,15 @@ def index():
             let payload;
             const btnOn = document.getElementById(`on-${id}`);
             const btnOff = document.getElementById(`off-${id}`);
-            
             if (!isAC) payload = {command: action === 'off' ? 'turnOff' : 'turnOn', parameter:'default', commandType:'command'};
             else { 
                 const t = document.getElementById(`temp-${id}`).value, m = document.getElementById(`mode-${id}`).value; 
                 payload = {command:'setAll', parameter:`${t},${m},1,${action}`, commandType:'command'}; 
             }
-            
             fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({deviceId:id, payload:payload})})
             .then(res => {
-                // コマンド成功時にボタンの表示を即座に切り替え（疑似状態反映）
-                if(action === 'on') {
-                    btnOn.classList.add('active'); btnOff.classList.remove('active');
-                } else {
-                    btnOff.classList.add('active'); btnOn.classList.remove('active');
-                }
+                if(action === 'on') { btnOn.classList.add('active'); btnOff.classList.remove('active'); } 
+                else { btnOff.classList.add('active'); btnOn.classList.remove('active'); }
             });
         }
 
@@ -379,7 +449,7 @@ def index():
         document.getElementById('sel-d').value = currentLoadedDate;
         updateLive(); loadData(); loadWeather(); loadSB();
         setInterval(updateLive, 5000); setInterval(loadData, 60000); setInterval(loadWeather, 3600000);
-        setInterval(loadSB, 30000); // 30秒ごとにSwitchBotの状態を同期
+        setInterval(loadSB, 30000);
     </script>
     </body></html>
     """)
